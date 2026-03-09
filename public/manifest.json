@@ -1,0 +1,35 @@
+{
+  "short_name": "Portfolio",
+  "name": "Portfolio - Angadi Mohammad Sadiq",
+  "icons": [
+    {
+      "src": "android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "favicon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png"
+    },
+    {
+      "src": "apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#0d1117",
+  "background_color": "#0d1117",
+  "display": "standalone",
+  "start_url": "/BeyondCode/",
+  "scope": "/BeyondCode/",
+  "description": "A dynamic and professional portfolio website showcasing the projects, achievements, and contact details of Angadi Mohammad Sadiq.",
+  "orientation": "portrait-primary",
+  "lang": "en",
+  "categories": ["portfolio", "web development", "software engineering", "AI/ML", "Data Sceintist"]
+}
