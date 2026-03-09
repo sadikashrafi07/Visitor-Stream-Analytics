@@ -1,18 +1,28 @@
+export type NullableString = string | null;
+
+export type BounceFilter = 'all' | 'bounce' | 'non-bounce';
+export type ConversionFilter = 'all' | 'yes' | 'no';
+
+export interface DateRange {
+  from: Date | null;
+  to: Date | null;
+}
+
 export interface Visitor {
   visitor_id: string;
   first_visit_at: string;
   last_visit_at: string;
   total_sessions: number;
-  country: string | null;
-  device_type: string | null;
-  browser: string | null;
-  os: string | null;
-  referrer: string | null;
-  first_utm_source: string | null;
-  first_utm_medium: string | null;
-  first_utm_campaign: string | null;
-  first_utm_content: string | null;
-  first_utm_term: string | null;
+  country: NullableString;
+  device_type: NullableString;
+  browser: NullableString;
+  os: NullableString;
+  referrer: NullableString;
+  first_utm_source: NullableString;
+  first_utm_medium: NullableString;
+  first_utm_campaign: NullableString;
+  first_utm_content: NullableString;
+  first_utm_term: NullableString;
   created_at: string;
 }
 
@@ -20,20 +30,27 @@ export interface Session {
   session_id: string;
   visitor_id: string;
   session_start: string;
-  session_end: string | null;
+  session_end: NullableString;
   duration_seconds: number;
   entry_page: string;
   exit_page: string;
   is_bounce: boolean;
   landing_page: string;
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
-  utm_content: string | null;
-  utm_term: string | null;
+  utm_source: NullableString;
+  utm_medium: NullableString;
+  utm_campaign: NullableString;
+  utm_content: NullableString;
+  utm_term: NullableString;
   created_at: string;
 }
 
+/**
+ * Optional / future model only.
+ * This is kept for compatibility in case a real `session_analytics`
+ * table or view is added later.
+ *
+ * It is NOT currently backed by an existing Supabase relation.
+ */
 export interface SessionAnalytics {
   session_id: string;
   visitor_id: string;
@@ -76,7 +93,7 @@ export interface AnalyticsEvent {
   session_id: string;
   event_name: string;
   page: string;
-  section: string | null;
+  section: NullableString;
   properties: string;
   created_at: string;
 }
@@ -102,17 +119,17 @@ export interface DailyMetric {
 }
 
 export interface FilterState {
-  dateRange: { from: Date | null; to: Date | null };
-  country: string | null;
-  deviceType: string | null;
-  browser: string | null;
-  os: string | null;
-  referrer: string | null;
-  utmSource: string | null;
-  utmMedium: string | null;
-  utmCampaign: string | null;
-  bounceFilter: 'all' | 'bounce' | 'non-bounce';
-  hasConversion: 'all' | 'yes' | 'no';
-  section: string | null;
-  eventType: string | null;
+  dateRange: DateRange;
+  country: NullableString;
+  deviceType: NullableString;
+  browser: NullableString;
+  os: NullableString;
+  referrer: NullableString;
+  utmSource: NullableString;
+  utmMedium: NullableString;
+  utmCampaign: NullableString;
+  bounceFilter: BounceFilter;
+  hasConversion: ConversionFilter;
+  section: NullableString;
+  eventType: NullableString;
 }

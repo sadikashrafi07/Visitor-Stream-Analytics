@@ -1,36 +1,123 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { Visitor, Session, SessionAnalytics, SectionEngagement, AnalyticsEvent, DailyMetric } from '@/lib/types';
+import type {
+  Visitor,
+  Session,
+  SessionAnalytics,
+  SectionEngagement,
+  AnalyticsEvent,
+  DailyMetric,
+} from '@/lib/types';
 
-type QueryState<T> = { data: T[]; loading: boolean; error: string | null };
+type QueryState<T> = {
+  data: T[];
+  loading: boolean;
+  error: string | null;
+};
 
-function useSupabaseQuery<T>(table: string, orderBy = 'created_at', ascending = false) {
-  const [state, setState] = useState<QueryState<T>>({ data: [], loading: true, error: null });
+type QueryOptions = {
+  realtime?: boolean;
+  missingTableFallback?: boolean;
+};
+
+function isMissingRelationError(message: string | null | undefined) {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes("could not find the table") ||
+    m.includes("schema cache") ||
+    m.includes("does not exist") ||
+    m.includes("relation") && m.includes("does not exist")
+  );
+}
+
+function useSupabaseQuery<T>(
+  table: string,
+  orderBy = 'created_at',
+  ascending = false,
+  options: QueryOptions = {}
+) {
+  const { realtime = true, missingTableFallback = false } = options;
+
+  const [state, setState] = useState<QueryState<T>>({
+    data: [],
+    loading: true,
+    error: null,
+  });
+
+  const isMountedRef = useRef(true);
 
   const fetch = useCallback(async () => {
-    setState(prev => ({ ...prev, loading: true, error: null }));
+    setState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+    }));
+
     const { data, error } = await supabase
       .from(table)
       .select('*')
       .order(orderBy, { ascending });
-    if (error) setState({ data: [], loading: false, error: error.message });
-    else setState({ data: (data || []) as T[], loading: false, error: null });
-  }, [table, orderBy, ascending]);
 
-  useEffect(() => { fetch(); }, [fetch]);
+    if (!isMountedRef.current) return;
 
-  // Realtime subscription
+    if (error) {
+      if (missingTableFallback && isMissingRelationError(error.message)) {
+        setState({
+          data: [],
+          loading: false,
+          error: null,
+        });
+        return;
+      }
+
+      setState({
+        data: [],
+        loading: false,
+        error: error.message,
+      });
+      return;
+    }
+
+    setState({
+      data: (data || []) as T[],
+      loading: false,
+      error: null,
+    });
+  }, [table, orderBy, ascending, missingTableFallback]);
+
   useEffect(() => {
+    isMountedRef.current = true;
+    void fetch();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [fetch]);
+
+  useEffect(() => {
+    if (!realtime) return;
+
     const channel = supabase
       .channel(`${table}-changes`)
-      .on('postgres_changes', { event: '*', schema: 'public', table }, () => {
-        fetch();
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table },
+        () => {
+          void fetch();
+        }
+      )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [table, fetch]);
 
-  return state;
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [table, fetch, realtime]);
+
+  return {
+    ...state,
+    refetch: fetch,
+  };
 }
 
 export function useVisitors() {
@@ -41,12 +128,29 @@ export function useSessions() {
   return useSupabaseQuery<Session>('sessions', 'created_at', false);
 }
 
+/**
+ * Temporary safe fallback:
+ * `session_analytics` does not currently exist in Supabase.
+ * This hook will return an empty dataset instead of breaking the dashboard.
+ *
+ * When you create a real `session_analytics` table/view later,
+ * this hook will start working automatically.
+ */
 export function useSessionAnalytics() {
-  return useSupabaseQuery<SessionAnalytics>('session_analytics', 'created_at', false);
+  return useSupabaseQuery<SessionAnalytics>(
+    'session_analytics',
+    'created_at',
+    false,
+    { missingTableFallback: true }
+  );
 }
 
 export function useSectionEngagement() {
-  return useSupabaseQuery<SectionEngagement>('section_engagement', 'created_at', false);
+  return useSupabaseQuery<SectionEngagement>(
+    'section_engagement',
+    'created_at',
+    false
+  );
 }
 
 export function useEvents() {

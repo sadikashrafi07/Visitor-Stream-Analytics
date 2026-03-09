@@ -1,50 +1,96 @@
-/** Safely parse JSON strings from database fields */
-export function safeParseJSON<T = Record<string, unknown>>(value: string | null | undefined, fallback: T = {} as T): T {
-  if (!value || value === '{}' || value === '[]') return fallback;
+/** Safely parse JSON-like values from database fields */
+export function safeParseJSON<T = Record<string, unknown>>(
+  value: unknown,
+  fallback: T = {} as T
+): T {
+  if (value == null) return fallback;
+
+  // Already parsed object/array from Supabase JSON/JSONB
+  if (typeof value === 'object') {
+    return value as T;
+  }
+
+  // Only strings should be trimmed / JSON.parsed
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === '{}' || trimmed === '[]') return fallback;
+
   try {
-    return JSON.parse(value) as T;
+    return JSON.parse(trimmed) as T;
   } catch {
     return fallback;
   }
 }
 
-/** Format seconds into human-readable duration */
-export function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) {
-    const m = Math.floor(seconds / 60);
-    const s = Math.round(seconds % 60);
-    return s > 0 ? `${m}m ${s}s` : `${m}m`;
-  }
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-/** Format large numbers with K/M suffixes */
-export function formatNumber(n: number): string {
+/** Format seconds into a human-readable duration */
+export function formatDuration(seconds: number): string {
+  const safeSeconds = Math.max(0, toFiniteNumber(seconds, 0));
+
+  if (safeSeconds < 60) {
+    return `${Math.round(safeSeconds)}s`;
+  }
+
+  if (safeSeconds < 3600) {
+    const minutes = Math.floor(safeSeconds / 60);
+    const remainingSeconds = Math.round(safeSeconds % 60);
+    return remainingSeconds > 0
+      ? `${minutes}m ${remainingSeconds}s`
+      : `${minutes}m`;
+  }
+
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.round((safeSeconds % 3600) / 60);
+
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+/** Format large numbers with compact K/M suffixes */
+export function formatNumber(value: number): string {
+  const n = toFiniteNumber(value, 0);
+
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toFixed(0);
+
+  return Math.round(n).toString();
 }
 
 /** Format percentage */
-export function formatPercent(n: number): string {
+export function formatPercent(value: number): string {
+  const n = toFiniteNumber(value, 0);
   return `${n.toFixed(1)}%`;
 }
 
 /** Pretty-print event names */
 export function formatEventName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  if (!name) return 'Unknown Event';
+
+  return name
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /** Pretty-print section names */
 export function formatSectionName(name: string): string {
   if (!name) return 'Unknown';
-  return name.charAt(0).toUpperCase() + name.slice(1);
+
+  return name
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-/** Get color for chart index */
+/** Get chart color by index */
 export function getChartColor(index: number): string {
   const colors = [
     'hsl(var(--chart-1))',
@@ -54,18 +100,24 @@ export function getChartColor(index: number): string {
     'hsl(var(--chart-5))',
     'hsl(var(--chart-6))',
   ];
-  return colors[index % colors.length];
+
+  const safeIndex = Math.abs(Math.floor(toFiniteNumber(index, 0)));
+  return colors[safeIndex % colors.length];
 }
 
-/** Aggregate JSON object fields across records */
-export function aggregateJsonCounts(records: string[]): Record<string, number> {
+/** Aggregate numeric JSON object fields across multiple JSON-like values */
+export function aggregateJsonCounts(records: unknown[]): Record<string, number> {
   const result: Record<string, number> = {};
+
   for (const raw of records) {
-    const parsed = safeParseJSON<Record<string, number>>(raw, {});
-    for (const [key, val] of Object.entries(parsed)) {
-      result[key] = (result[key] || 0) + (typeof val === 'number' ? val : 0);
+    const parsed = safeParseJSON<Record<string, unknown>>(raw, {});
+
+    for (const [key, value] of Object.entries(parsed)) {
+      const numericValue = toFiniteNumber(value, 0);
+      result[key] = (result[key] || 0) + numericValue;
     }
   }
+
   return result;
 }
 
@@ -76,22 +128,57 @@ export function sortedEntries(obj: Record<string, number>): [string, number][] {
 
 /** Relative time string */
 export function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
+  const timestamp = new Date(dateStr).getTime();
+
+  if (!Number.isFinite(timestamp)) {
+    return 'Unknown time';
+  }
+
+  const diffMs = Date.now() - timestamp;
+
+  if (diffMs < 0) {
+    return 'just now';
+  }
+
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
-  return `${Math.floor(days / 30)}mo ago`;
+
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
 }
 
-/** Format date for display */
+/** Format full date for display */
 export function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const date = new Date(dateStr);
+
+  if (!Number.isFinite(date.getTime())) {
+    return 'Invalid date';
+  }
+
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }
 
+/** Format short date for compact chart labels */
 export function formatShortDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const date = new Date(dateStr);
+
+  if (!Number.isFinite(date.getTime())) {
+    return 'Invalid date';
+  }
+
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
 }
