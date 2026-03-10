@@ -2,17 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
-// https://vitejs.dev/config/
 export default defineConfig({
-  base: "/visitor-stream-analytics/",
-
-  server: {
-    host: true,
-    port: 8080,
-    hmr: {
-      overlay: false,
-    },
-  },
+  base: "/Visitor-Stream-Analytics/",
 
   plugins: [react()],
 
@@ -22,8 +13,17 @@ export default defineConfig({
     },
   },
 
+  server: {
+    host: true,
+    port: 8080,
+    hmr: {
+      overlay: false,
+    },
+  },
+
   build: {
     outDir: "dist",
     sourcemap: false,
+    emptyOutDir: true,
   },
 });
