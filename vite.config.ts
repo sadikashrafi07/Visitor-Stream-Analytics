@@ -4,15 +4,12 @@ import path from "path";
 
 export default defineConfig({
   base: "/Visitor-Stream-Analytics/",
-
   plugins: [react()],
-
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
-
   server: {
     host: true,
     port: 8080,
@@ -20,10 +17,9 @@ export default defineConfig({
       overlay: false,
     },
   },
-
   build: {
     outDir: "dist",
-    sourcemap: false,
     emptyOutDir: true,
+    sourcemap: false,
   },
 });
