@@ -14,11 +14,31 @@ import {
   LoadingState,
   ErrorState,
 } from './ChartContainer';
-import { useDailyMetrics, useEvents, useSessions } from '@/hooks/useAnalyticsData';
-import { formatShortDate, formatPercent } from '@/lib/analytics-utils';
+import {
+  useDailyMetrics,
+  useEvents,
+  useSessions,
+} from '@/hooks/useAnalyticsData';
+import {
+  formatShortDate,
+  formatPercent,
+  formatNumber,
+} from '@/lib/analytics-utils';
 
 const RESUME_EVENT = 'resume_download';
 const CONTACT_SUCCESS_EVENT = 'contact_submit_success';
+
+type ConversionTrendRow = {
+  date: string;
+  resumeDownloads: number;
+  contactSubmits: number;
+  totalConversionActions: number;
+};
+
+function toSafeNumber(value: unknown, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 export function ConversionAnalytics() {
   const {
@@ -39,58 +59,74 @@ export function ConversionAnalytics() {
     error: sessionsError,
   } = useSessions();
 
-  const trendData = useMemo(
-    () =>
-      metrics.map((m) => ({
-        date: formatShortDate(m.metric_date),
-        resumeDownloads: m.resume_downloads,
-        contactSubmits: m.contact_submits,
-        conversions: m.total_conversions,
-      })),
-    [metrics]
-  );
+  const derived = useMemo(() => {
+    const resumeEvents = events.filter(
+      (event) => event.event_name === RESUME_EVENT
+    );
 
-  const conversionSummary = useMemo(() => {
-    let resumeTotal = 0;
-    let contactTotal = 0;
+    const contactSuccessEvents = events.filter(
+      (event) => event.event_name === CONTACT_SUCCESS_EVENT
+    );
 
     const convertedSessionIds = new Set<string>();
 
-    for (const event of events) {
-      if (event.event_name === RESUME_EVENT) {
-        resumeTotal += 1;
-        if (event.session_id) convertedSessionIds.add(event.session_id);
-      }
-
-      if (event.event_name === CONTACT_SUCCESS_EVENT) {
-        contactTotal += 1;
-        if (event.session_id) convertedSessionIds.add(event.session_id);
-      }
+    for (const event of resumeEvents) {
+      if (event.session_id) convertedSessionIds.add(event.session_id);
     }
 
+    for (const event of contactSuccessEvents) {
+      if (event.session_id) convertedSessionIds.add(event.session_id);
+    }
+
+    const resumeTotal = resumeEvents.length;
+    const contactTotal = contactSuccessEvents.length;
+    const totalConversionActions = resumeTotal + contactTotal;
     const conversionSessions = convertedSessionIds.size;
     const totalSessions = sessions.length;
+
     const conversionRate =
       totalSessions > 0 ? (conversionSessions / totalSessions) * 100 : 0;
+
+    const actionsPerConvertedSession =
+      conversionSessions > 0
+        ? totalConversionActions / conversionSessions
+        : 0;
+
+    const resumeShare =
+      totalConversionActions > 0
+        ? (resumeTotal / totalConversionActions) * 100
+        : 0;
+
+    const contactShare =
+      totalConversionActions > 0
+        ? (contactTotal / totalConversionActions) * 100
+        : 0;
+
+    const trendData: ConversionTrendRow[] = metrics.map((metric) => {
+      const resumeDownloads = toSafeNumber(metric.resume_downloads);
+      const contactSubmits = toSafeNumber(metric.contact_submits);
+
+      return {
+        date: formatShortDate(metric.metric_date),
+        resumeDownloads,
+        contactSubmits,
+        totalConversionActions: resumeDownloads + contactSubmits,
+      };
+    });
 
     return {
       resumeTotal,
       contactTotal,
+      totalConversionActions,
       conversionSessions,
       totalSessions,
       conversionRate,
+      actionsPerConvertedSession,
+      resumeShare,
+      contactShare,
+      trendData,
     };
-  }, [events, sessions]);
-
-  const highIntentSummary = useMemo(() => {
-    const latestMetric = metrics.length ? metrics[metrics.length - 1] : null;
-
-    return {
-      totalConversions: latestMetric?.total_conversions ?? 0,
-      resumeConversions: latestMetric?.resume_conversions ?? 0,
-      contactConversions: latestMetric?.contact_conversions ?? 0,
-    };
-  }, [metrics]);
+  }, [events, sessions, metrics]);
 
   const isLoading = metricsLoading || eventsLoading || sessionsLoading;
   const error = metricsError || eventsError || sessionsError || null;
@@ -106,7 +142,7 @@ export function ConversionAnalytics() {
             Resume Downloads
           </p>
           <p className="mt-1 text-3xl font-bold font-display text-success">
-            {conversionSummary.resumeTotal}
+            {formatNumber(derived.resumeTotal)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             Strong hiring-intent signal
@@ -118,7 +154,7 @@ export function ConversionAnalytics() {
             Contact Submits
           </p>
           <p className="mt-1 text-3xl font-bold font-display text-primary">
-            {conversionSummary.contactTotal}
+            {formatNumber(derived.contactTotal)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             Direct recruiter interest
@@ -130,10 +166,10 @@ export function ConversionAnalytics() {
             Sessions with Conversion
           </p>
           <p className="mt-1 text-2xl font-bold font-display">
-            {conversionSummary.conversionSessions}
+            {formatNumber(derived.conversionSessions)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Unique sessions with resume or contact action
+            Unique sessions containing at least one conversion action
           </p>
         </div>
 
@@ -142,7 +178,7 @@ export function ConversionAnalytics() {
             Conversion Rate
           </p>
           <p className="mt-1 text-2xl font-bold font-display">
-            {formatPercent(conversionSummary.conversionRate)}
+            {formatPercent(derived.conversionRate)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             Converted sessions / total sessions
@@ -154,15 +190,39 @@ export function ConversionAnalytics() {
         title="Conversions Over Time"
         subtitle="Daily resume downloads and contact submissions"
       >
-        {trendData.length === 0 ? (
+        {derived.trendData.length === 0 ? (
           <EmptyState message="No conversion trend data available yet" />
         ) : (
           <ResponsiveContainer width="100%" height={250}>
-            <AreaChart data={trendData}>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                className="stroke-border"
-              />
+            <AreaChart data={derived.trendData}>
+              <defs>
+                <linearGradient id="resumeGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop
+                    offset="5%"
+                    stopColor="hsl(var(--chart-3))"
+                    stopOpacity={0.28}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="hsl(var(--chart-3))"
+                    stopOpacity={0}
+                  />
+                </linearGradient>
+                <linearGradient id="contactGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop
+                    offset="5%"
+                    stopColor="hsl(var(--chart-1))"
+                    stopOpacity={0.24}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="hsl(var(--chart-1))"
+                    stopOpacity={0}
+                  />
+                </linearGradient>
+              </defs>
+
+              <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
               <XAxis
                 dataKey="date"
                 tick={{ fontSize: 11 }}
@@ -171,6 +231,7 @@ export function ConversionAnalytics() {
               <YAxis
                 tick={{ fontSize: 11 }}
                 className="fill-muted-foreground"
+                allowDecimals={false}
               />
               <Tooltip
                 contentStyle={{
@@ -184,8 +245,7 @@ export function ConversionAnalytics() {
                 type="monotone"
                 dataKey="resumeDownloads"
                 stroke="hsl(var(--chart-3))"
-                fill="hsl(var(--chart-3))"
-                fillOpacity={0.15}
+                fill="url(#resumeGradient)"
                 strokeWidth={2}
                 name="Resume Downloads"
               />
@@ -193,8 +253,7 @@ export function ConversionAnalytics() {
                 type="monotone"
                 dataKey="contactSubmits"
                 stroke="hsl(var(--chart-1))"
-                fill="hsl(var(--chart-1))"
-                fillOpacity={0.15}
+                fill="url(#contactGradient)"
                 strokeWidth={2}
                 name="Contact Submits"
               />
@@ -204,47 +263,48 @@ export function ConversionAnalytics() {
       </ChartContainer>
 
       <ChartContainer
-        title="Strongest Hiring-Intent Signals"
-        subtitle="Actions that indicate stronger recruiter interest"
+        title="Conversion Quality Insights"
+        subtitle="How conversion behavior is distributed across recruiter-intent actions"
         className="lg:col-span-2"
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div className="rounded-lg border border-border bg-success/5 p-4">
-            <p className="text-sm font-medium text-success">
-              📄 Resume Download
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Downloading the resume usually indicates serious evaluation and
-              shortlisting intent.
-            </p>
-            <p className="mt-3 text-lg font-semibold text-foreground">
-              {highIntentSummary.resumeConversions}
-            </p>
-          </div>
-
-          <div className="rounded-lg border border-border bg-primary/5 p-4">
-            <p className="text-sm font-medium text-primary">
-              ✉️ Contact Form Submit
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Contact submission is the clearest direct-interest signal from a
-              recruiter or hiring team.
-            </p>
-            <p className="mt-3 text-lg font-semibold text-foreground">
-              {highIntentSummary.contactConversions}
-            </p>
-          </div>
-
           <div className="rounded-lg border border-border bg-warning/5 p-4">
             <p className="text-sm font-medium text-warning">
               🔍 Total Conversion Actions
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Combined conversion actions show how often visitors move beyond
-              passive browsing into intent-driven behavior.
+              Total intent actions recorded, including resume downloads and
+              successful contact submissions.
             </p>
             <p className="mt-3 text-lg font-semibold text-foreground">
-              {highIntentSummary.totalConversions}
+              {formatNumber(derived.totalConversionActions)}
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-primary/5 p-4">
+            <p className="text-sm font-medium text-primary">
+              📈 Actions per Converted Session
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Average number of conversion actions inside sessions that actually
+              converted.
+            </p>
+            <p className="mt-3 text-lg font-semibold text-foreground">
+              {derived.actionsPerConvertedSession.toFixed(1)}
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-success/5 p-4">
+            <p className="text-sm font-medium text-success">
+              ⚖️ Conversion Mix
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Distribution of conversion intent between resume download behavior
+              and direct contact behavior.
+            </p>
+            <p className="mt-3 text-lg font-semibold text-foreground">
+              Resume {formatPercent(derived.resumeShare)} · Contact{' '}
+              {formatPercent(derived.contactShare)}
             </p>
           </div>
         </div>
