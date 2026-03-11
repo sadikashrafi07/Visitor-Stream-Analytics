@@ -152,7 +152,7 @@ const Index = () => {
                       <div>
                         <p className="text-sm font-medium text-foreground">View Portfolio</p>
                         <p className="text-xs text-muted-foreground">
-                          Open your live portfolio website
+                          Open my portfolio website
                         </p>
                       </div>
                     </div>

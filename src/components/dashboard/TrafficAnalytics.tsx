@@ -19,11 +19,17 @@ import {
   LoadingState,
   ErrorState,
 } from './ChartContainer';
-import { useDailyMetrics, useVisitors } from '@/hooks/useAnalyticsData';
+import {
+  useDailyMetrics,
+  useVisitors,
+  useSessions,
+} from '@/hooks/useAnalyticsData';
 import {
   formatShortDate,
   getChartColor,
   sortedEntries,
+  formatPercent,
+  formatNumber,
 } from '@/lib/analytics-utils';
 
 type ChartRow = {
@@ -46,7 +52,18 @@ function truncateLabel(value: string, max = 30) {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function buildCountRows(values: Array<string | null | undefined>, fallback: string): ChartRow[] {
+function toTitleCase(value: string) {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildCountRows(
+  values: Array<string | null | undefined>,
+  fallback: string
+): ChartRow[] {
   const counts: Record<string, number> = {};
 
   for (const value of values) {
@@ -58,6 +75,66 @@ function buildCountRows(values: Array<string | null | undefined>, fallback: stri
     name,
     value,
   }));
+}
+
+function buildAcquisitionRows(
+  values: Array<string | null | undefined>,
+  fallback: string
+): ChartRow[] {
+  const counts: Record<string, number> = {};
+
+  for (const value of values) {
+    const normalized = normalizeLabel(value, fallback);
+    const formatted =
+      normalized === fallback ? fallback : toTitleCase(normalized);
+
+    counts[formatted] = (counts[formatted] || 0) + 1;
+  }
+
+  return sortedEntries(counts).map(([name, value]) => ({
+    name,
+    value,
+  }));
+}
+
+function hasAnySessionUtm(session: {
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
+}) {
+  return Boolean(
+    session.utm_source ||
+      session.utm_medium ||
+      session.utm_campaign ||
+      session.utm_content ||
+      session.utm_term
+  );
+}
+
+function hasAnyVisitorFirstTouch(visitor: {
+  first_utm_source: string | null;
+  first_utm_medium: string | null;
+  first_utm_campaign: string | null;
+  first_utm_content: string | null;
+  first_utm_term: string | null;
+}) {
+  return Boolean(
+    visitor.first_utm_source ||
+      visitor.first_utm_medium ||
+      visitor.first_utm_campaign ||
+      visitor.first_utm_content ||
+      visitor.first_utm_term
+  );
+}
+
+function hasMeaningfulAttribution(data: ChartRow[], fallback: string) {
+  return data.some((row) => row.name !== fallback);
+}
+
+function formatCountTooltipLabel(name: string) {
+  return name === 'value' ? 'Count' : name;
 }
 
 export function TrafficAnalytics() {
@@ -72,6 +149,12 @@ export function TrafficAnalytics() {
     loading: visitorsLoading,
     error: visitorsError,
   } = useVisitors();
+
+  const {
+    data: sessions,
+    loading: sessionsLoading,
+    error: sessionsError,
+  } = useSessions();
 
   const dailyData = useMemo<DailyTrafficRow[]>(
     () =>
@@ -89,7 +172,8 @@ export function TrafficAnalytics() {
   );
 
   const deviceData = useMemo<ChartRow[]>(
-    () => buildCountRows(visitors.map((visitor) => visitor.device_type), 'Unknown'),
+    () =>
+      buildCountRows(visitors.map((visitor) => visitor.device_type), 'Unknown'),
     [visitors]
   );
 
@@ -115,23 +199,166 @@ export function TrafficAnalytics() {
     [visitors]
   );
 
-  const utmSourceData = useMemo<ChartRow[]>(
+  const firstTouchSourceFallback = 'Organic / Direct';
+  const firstTouchMediumFallback = 'No First-Touch Medium';
+  const firstTouchCampaignFallback = 'No First-Touch Campaign';
+  const sessionSourceFallback = 'No Session Source';
+  const sessionMediumFallback = 'No Session Medium';
+  const sessionCampaignFallback = 'No Session Campaign';
+
+  const firstTouchSourceData = useMemo<ChartRow[]>(
     () =>
-      buildCountRows(
+      buildAcquisitionRows(
         visitors.map((visitor) => visitor.first_utm_source),
-        'Organic / Direct'
+        firstTouchSourceFallback
       ),
     [visitors]
   );
 
-  const isLoading = metricsLoading || visitorsLoading;
-  const error = metricsError || visitorsError || null;
+  const firstTouchMediumData = useMemo<ChartRow[]>(
+    () =>
+      buildAcquisitionRows(
+        visitors.map((visitor) => visitor.first_utm_medium),
+        firstTouchMediumFallback
+      ),
+    [visitors]
+  );
+
+  const firstTouchCampaignData = useMemo<ChartRow[]>(
+    () =>
+      buildAcquisitionRows(
+        visitors.map((visitor) => visitor.first_utm_campaign),
+        firstTouchCampaignFallback
+      ).map((row) => ({
+        ...row,
+        name: truncateLabel(row.name, 28),
+      })),
+    [visitors]
+  );
+
+  const sessionSourceData = useMemo<ChartRow[]>(
+    () =>
+      buildAcquisitionRows(
+        sessions.map((session) => session.utm_source),
+        sessionSourceFallback
+      ),
+    [sessions]
+  );
+
+  const sessionMediumData = useMemo<ChartRow[]>(
+    () =>
+      buildAcquisitionRows(
+        sessions.map((session) => session.utm_medium),
+        sessionMediumFallback
+      ),
+    [sessions]
+  );
+
+  const sessionCampaignData = useMemo<ChartRow[]>(
+    () =>
+      buildAcquisitionRows(
+        sessions.map((session) => session.utm_campaign),
+        sessionCampaignFallback
+      ).map((row) => ({
+        ...row,
+        name: truncateLabel(row.name, 28),
+      })),
+    [sessions]
+  );
+
+  const attributionSummary = useMemo(() => {
+    const totalVisitors = visitors.length;
+    const totalSessions = sessions.length;
+
+    const attributedVisitors = visitors.filter(hasAnyVisitorFirstTouch).length;
+    const taggedSessions = sessions.filter(hasAnySessionUtm).length;
+
+    const firstTouchSourceTop =
+      firstTouchSourceData.find((row) => row.name !== firstTouchSourceFallback) ??
+      firstTouchSourceData[0] ??
+      null;
+
+    const sessionSourceTop =
+      sessionSourceData.find((row) => row.name !== sessionSourceFallback) ??
+      sessionSourceData[0] ??
+      null;
+
+    return {
+      totalVisitors,
+      totalSessions,
+      attributedVisitors,
+      unattributedVisitors: totalVisitors - attributedVisitors,
+      taggedSessions,
+      untaggedSessions: totalSessions - taggedSessions,
+      attributedVisitorRate:
+        totalVisitors > 0 ? (attributedVisitors / totalVisitors) * 100 : 0,
+      taggedSessionRate:
+        totalSessions > 0 ? (taggedSessions / totalSessions) * 100 : 0,
+      firstTouchSourceTop,
+      sessionSourceTop,
+    };
+  }, [visitors, sessions, firstTouchSourceData, sessionSourceData]);
+
+  const isLoading = metricsLoading || visitorsLoading || sessionsLoading;
+  const error = metricsError || visitorsError || sessionsError || null;
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 lg:col-span-2">
+        <div className="kpi-card">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Top First-Touch Source
+          </p>
+          <p className="mt-1 text-xl font-bold font-display text-primary">
+            {attributionSummary.firstTouchSourceTop?.name ?? '—'}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Original visitor acquisition source
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Top Session Source
+          </p>
+          <p className="mt-1 text-xl font-bold font-display text-primary">
+            {attributionSummary.sessionSourceTop?.name ?? '—'}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Source recorded on individual sessions
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Attributed Visitors
+          </p>
+          <p className="mt-1 text-2xl font-bold font-display">
+            {formatNumber(attributionSummary.attributedVisitors)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {formatPercent(attributionSummary.attributedVisitorRate)} of visitors
+            have first-touch UTM attribution
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Tagged Sessions
+          </p>
+          <p className="mt-1 text-2xl font-bold font-display">
+            {formatNumber(attributionSummary.taggedSessions)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {formatPercent(attributionSummary.taggedSessionRate)} of sessions
+            carry session-level UTM tags
+          </p>
+        </div>
+      </div>
+
       <ChartContainer
         title="Visitors & Sessions by Day"
         subtitle="Daily traffic trend over time"
@@ -235,14 +462,61 @@ export function TrafficAnalytics() {
 
       <BarChartCard
         title="By Referrer"
-        subtitle="Traffic acquisition source"
+        subtitle="Visitor-level traffic acquisition from referrer"
         data={referrerData}
+        barColor="hsl(var(--chart-1))"
       />
 
       <BarChartCard
-        title="First-Touch UTM Source"
-        subtitle="How visitors first discovered the portfolio"
-        data={utmSourceData}
+        title="First-Touch Source"
+        subtitle="Where visitors were originally acquired"
+        data={firstTouchSourceData}
+        barColor="hsl(var(--chart-2))"
+      />
+
+      <AttributionBarChartCard
+        title="First-Touch Medium"
+        subtitle="Original acquisition channel at visitor level"
+        data={firstTouchMediumData}
+        fallbackLabel={firstTouchMediumFallback}
+        emptyMessage="No visitor-level first-touch medium tagging detected yet"
+        barColor="hsl(var(--chart-3))"
+      />
+
+      <AttributionBarChartCard
+        title="First-Touch Campaign"
+        subtitle="Original campaign attribution for first discovery"
+        data={firstTouchCampaignData}
+        fallbackLabel={firstTouchCampaignFallback}
+        emptyMessage="No visitor-level first-touch campaign tagging detected yet"
+        barColor="hsl(var(--chart-4))"
+      />
+
+      <AttributionBarChartCard
+        title="Session Source"
+        subtitle="UTM source recorded for individual sessions"
+        data={sessionSourceData}
+        fallbackLabel={sessionSourceFallback}
+        emptyMessage="No session-level UTM source tagging detected yet"
+        barColor="hsl(var(--chart-5))"
+      />
+
+      <AttributionBarChartCard
+        title="Session Medium"
+        subtitle="UTM medium distribution across sessions"
+        data={sessionMediumData}
+        fallbackLabel={sessionMediumFallback}
+        emptyMessage="No session-level UTM medium tagging detected yet"
+        barColor="hsl(var(--chart-6))"
+      />
+
+      <AttributionBarChartCard
+        title="Session Campaign"
+        subtitle="Campaign-tagged sessions based on session-level UTM values"
+        data={sessionCampaignData}
+        fallbackLabel={sessionCampaignFallback}
+        emptyMessage="No session-level UTM campaign tagging detected yet"
+        barColor="hsl(var(--chart-4))"
       />
     </div>
   );
@@ -291,6 +565,10 @@ function PieChartCard({
                 borderRadius: 8,
                 fontSize: 12,
               }}
+              formatter={(value: number, name: string) => [
+                `${value}`,
+                formatCountTooltipLabel(name),
+              ]}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -303,10 +581,12 @@ function BarChartCard({
   title,
   subtitle,
   data,
+  barColor = 'hsl(var(--chart-1))',
 }: {
   title: string;
   subtitle?: string;
   data: ChartRow[];
+  barColor?: string;
 }) {
   return (
     <ChartContainer title={title} subtitle={subtitle}>
@@ -324,7 +604,7 @@ function BarChartCard({
             <YAxis
               type="category"
               dataKey="name"
-              width={130}
+              width={150}
               tick={{ fontSize: 11 }}
               className="fill-muted-foreground"
             />
@@ -335,12 +615,71 @@ function BarChartCard({
                 borderRadius: 8,
                 fontSize: 12,
               }}
+              formatter={(value: number, name: string) => [
+                `${value}`,
+                formatCountTooltipLabel(name),
+              ]}
             />
-            <Bar
-              dataKey="value"
-              fill="hsl(var(--chart-1))"
-              radius={[0, 4, 4, 0]}
+            <Bar dataKey="value" fill={barColor} radius={[0, 4, 4, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+    </ChartContainer>
+  );
+}
+
+function AttributionBarChartCard({
+  title,
+  subtitle,
+  data,
+  fallbackLabel,
+  emptyMessage,
+  barColor,
+}: {
+  title: string;
+  subtitle?: string;
+  data: ChartRow[];
+  fallbackLabel: string;
+  emptyMessage: string;
+  barColor: string;
+}) {
+  const meaningfulData = data.filter((row) => row.name !== fallbackLabel);
+  const shouldShowEmptyState =
+    data.length === 0 || !hasMeaningfulAttribution(data, fallbackLabel);
+
+  return (
+    <ChartContainer title={title} subtitle={subtitle}>
+      {shouldShowEmptyState ? (
+        <EmptyState message={emptyMessage} />
+      ) : (
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={meaningfulData} layout="vertical">
+            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+            <XAxis
+              type="number"
+              tick={{ fontSize: 11 }}
+              className="fill-muted-foreground"
             />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={150}
+              tick={{ fontSize: 11 }}
+              className="fill-muted-foreground"
+            />
+            <Tooltip
+              contentStyle={{
+                background: 'hsl(var(--card))',
+                border: '1px solid hsl(var(--border))',
+                borderRadius: 8,
+                fontSize: 12,
+              }}
+              formatter={(value: number, name: string) => [
+                `${value}`,
+                formatCountTooltipLabel(name),
+              ]}
+            />
+            <Bar dataKey="value" fill={barColor} radius={[0, 4, 4, 0]} />
           </BarChart>
         </ResponsiveContainer>
       )}
