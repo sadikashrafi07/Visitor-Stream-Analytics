@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 
-const PORTFOLIO_URL = 'https://beyond-code-78c87.web.app';
+const PORTFOLIO_URL = 'https://beyond-code-78c87.web.app/?utm_source=analytics_dashboard&utm_medium=dashboard&utm_campaign=view_portfolio';
 
 const Index = () => {
   const [tab, setTab] = useState('overview');
