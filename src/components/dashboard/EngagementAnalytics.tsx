@@ -55,6 +55,22 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function toSafeNumber(value: unknown, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeDurationSeconds(value: unknown) {
+  return Math.max(0, Math.floor(toSafeNumber(value, 0)));
+}
+
+function isSessionFinalized(session: {
+  session_end?: string | null;
+  duration_seconds?: number | null;
+}) {
+  return Boolean(session.session_end);
+}
+
 function getSessionQuality(
   durationSeconds: number,
   maxScrollDepth: number,
@@ -66,21 +82,32 @@ function getSessionQuality(
 ): Pick<SessionDerivedStats, 'quality_score' | 'quality_label'> {
   let score = 0;
 
+  const safeDuration = clamp(durationSeconds, 0, 7200);
+  const safeScroll = clamp(maxScrollDepth, 0, 100);
+  const safeUniqueSections = clamp(uniqueSectionsCount, 0, 20);
+
+  // Section time should not dominate beyond the session duration itself.
+  const boundedSectionTime = clamp(
+    Math.min(totalSectionTimeSeconds, safeDuration),
+    0,
+    7200
+  );
+
   if (hasResumeConversion) score += 35;
   if (hasContactConversion) score += 35;
 
-  score += clamp(durationSeconds / 20, 0, 20);
-  score += clamp(maxScrollDepth / 10, 0, 10);
-  score += clamp(uniqueSectionsCount * 4, 0, 20);
-  score += clamp(totalSectionTimeSeconds / 6, 0, 20);
+  score += clamp(safeDuration / 20, 0, 20);
+  score += clamp(safeScroll / 10, 0, 10);
+  score += clamp(safeUniqueSections * 4, 0, 20);
+  score += clamp(boundedSectionTime / 6, 0, 20);
 
   if (isBounce) score -= 10;
 
   const looksPassive =
-    durationSeconds >= 300 &&
-    maxScrollDepth === 0 &&
-    uniqueSectionsCount === 0 &&
-    totalSectionTimeSeconds === 0 &&
+    safeDuration >= 300 &&
+    safeScroll === 0 &&
+    safeUniqueSections === 0 &&
+    boundedSectionTime === 0 &&
     !hasResumeConversion &&
     !hasContactConversion;
 
@@ -129,11 +156,21 @@ export function EngagementAnalytics() {
     () =>
       metrics.map((metric) => ({
         date: formatShortDate(metric.metric_date),
-        duration: parseFloat(metric.avg_session_duration) || 0,
-        bounceRate: (parseFloat(metric.bounce_rate) || 0) * 100,
-        engagement: parseFloat(metric.avg_engagement_score) || 0,
+        duration: toSafeNumber(metric.avg_session_duration, 0),
+        bounceRate: toSafeNumber(metric.bounce_rate, 0) * 100,
+        engagement: toSafeNumber(metric.avg_engagement_score, 0),
       })),
     [metrics]
+  );
+
+  const finalizedSessions = useMemo(
+    () => sessions.filter((session) => isSessionFinalized(session)),
+    [sessions]
+  );
+
+  const finalizedSessionIds = useMemo(
+    () => new Set(finalizedSessions.map((session) => session.session_id)),
+    [finalizedSessions]
   );
 
   const sessionDerivedStats = useMemo<SessionDerivedStats[]>(() => {
@@ -144,12 +181,14 @@ export function EngagementAnalytics() {
     const contactBySession = new Set<string>();
 
     for (const event of events) {
-      if (!event.session_id) continue;
+      if (!event.session_id || !finalizedSessionIds.has(event.session_id)) {
+        continue;
+      }
 
       if (event.event_name === SCROLL_DEPTH_EVENT) {
         const props = safeParseJSON<ScrollDepthProps>(event.properties, {});
-        const depth = Number(props.depth ?? 0);
-        const normalizedDepth = Number.isFinite(depth) ? depth : 0;
+        const depth = toSafeNumber(props.depth, 0);
+        const normalizedDepth = clamp(Math.floor(depth), 0, 100);
         const currentDepth = scrollBySession.get(event.session_id) ?? 0;
 
         scrollBySession.set(
@@ -168,22 +207,29 @@ export function EngagementAnalytics() {
     }
 
     for (const row of sectionEngagement) {
-      if (!row.session_id) continue;
+      if (!row.session_id || !finalizedSessionIds.has(row.session_id)) continue;
+
+      const sectionName =
+        typeof row.section_name === 'string' ? row.section_name.trim() : '';
+
+      if (!sectionName) continue;
 
       if (!uniqueSectionsBySession.has(row.session_id)) {
         uniqueSectionsBySession.set(row.session_id, new Set<string>());
       }
 
-      uniqueSectionsBySession.get(row.session_id)?.add(row.section_name);
+      uniqueSectionsBySession.get(row.session_id)?.add(sectionName);
 
       totalSectionTimeBySession.set(
         row.session_id,
         (totalSectionTimeBySession.get(row.session_id) ?? 0) +
-          Number(row.time_spent_seconds || 0)
+          Math.max(0, Math.floor(toSafeNumber(row.time_spent_seconds, 0)))
       );
     }
 
-    return sessions.map((session) => {
+    return finalizedSessions.map((session) => {
+      const durationSeconds = normalizeDurationSeconds(session.duration_seconds);
+      const maxScrollDepth = scrollBySession.get(session.session_id) ?? 0;
       const uniqueSectionsCount =
         uniqueSectionsBySession.get(session.session_id)?.size ?? 0;
       const totalSectionTimeSeconds =
@@ -194,21 +240,21 @@ export function EngagementAnalytics() {
       const hasConversion = conversionResume || conversionContact;
 
       const quality = getSessionQuality(
-        session.duration_seconds,
-        scrollBySession.get(session.session_id) ?? 0,
+        durationSeconds,
+        maxScrollDepth,
         uniqueSectionsCount,
         totalSectionTimeSeconds,
         conversionResume,
         conversionContact,
-        session.is_bounce
+        Boolean(session.is_bounce)
       );
 
       return {
         session_id: session.session_id,
         visitor_id: session.visitor_id,
-        duration_seconds: session.duration_seconds,
-        is_bounce: session.is_bounce,
-        max_scroll_depth: scrollBySession.get(session.session_id) ?? 0,
+        duration_seconds: durationSeconds,
+        is_bounce: Boolean(session.is_bounce),
+        max_scroll_depth: maxScrollDepth,
         unique_sections_count: uniqueSectionsCount,
         total_section_time_seconds: totalSectionTimeSeconds,
         conversion_resume: conversionResume,
@@ -218,7 +264,7 @@ export function EngagementAnalytics() {
         quality_label: quality.quality_label,
       };
     });
-  }, [sessions, events, sectionEngagement]);
+  }, [finalizedSessions, finalizedSessionIds, events, sectionEngagement]);
 
   const scrollDistribution = useMemo(() => {
     const buckets: Record<string, number> = {
@@ -229,7 +275,7 @@ export function EngagementAnalytics() {
     };
 
     for (const session of sessionDerivedStats) {
-      const depth = session.max_scroll_depth;
+      const depth = clamp(session.max_scroll_depth, 0, 100);
 
       if (depth <= 25) buckets['0-25%'] += 1;
       else if (depth <= 50) buckets['26-50%'] += 1;
@@ -268,12 +314,20 @@ export function EngagementAnalytics() {
           return b.quality_score - a.quality_score;
         }
 
+        if (Number(b.has_conversion) !== Number(a.has_conversion)) {
+          return Number(b.has_conversion) - Number(a.has_conversion);
+        }
+
         if (b.total_section_time_seconds !== a.total_section_time_seconds) {
           return b.total_section_time_seconds - a.total_section_time_seconds;
         }
 
         if (b.max_scroll_depth !== a.max_scroll_depth) {
           return b.max_scroll_depth - a.max_scroll_depth;
+        }
+
+        if (b.unique_sections_count !== a.unique_sections_count) {
+          return b.unique_sections_count - a.unique_sections_count;
         }
 
         return b.duration_seconds - a.duration_seconds;
@@ -397,7 +451,7 @@ export function EngagementAnalytics() {
 
       <ChartContainer
         title="Scroll Depth Distribution"
-        subtitle="Maximum scroll depth reached per session"
+        subtitle="Maximum scroll depth reached per finalized session"
       >
         {scrollDistribution.every((x) => x.value === 0) ? (
           <EmptyState message="No scroll depth data available yet" />
@@ -437,7 +491,7 @@ export function EngagementAnalytics() {
 
       <ChartContainer
         title="Session Quality Categories"
-        subtitle="Classified using conversions, section engagement, scroll depth, and duration confidence"
+        subtitle="Classified using finalized sessions only"
       >
         {sessionQualityDistribution.every((x) => x.value === 0) ? (
           <EmptyState message="No session quality data available yet" />
@@ -481,7 +535,7 @@ export function EngagementAnalytics() {
         className="lg:col-span-2"
       >
         {topSessions.length === 0 ? (
-          <EmptyState message="No session data available yet" />
+          <EmptyState message="No finalized session data available yet" />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

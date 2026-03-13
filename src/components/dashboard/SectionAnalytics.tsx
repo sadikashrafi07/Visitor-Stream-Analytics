@@ -14,7 +14,10 @@ import {
   LoadingState,
   ErrorState,
 } from './ChartContainer';
-import { useSectionEngagement } from '@/hooks/useAnalyticsData';
+import {
+  useSectionEngagement,
+  useSessions,
+} from '@/hooks/useAnalyticsData';
 import { formatSectionName, formatDuration } from '@/lib/analytics-utils';
 
 type SectionStat = {
@@ -23,6 +26,7 @@ type SectionStat = {
   totalTime: number;
   viewCount: number;
   avgTime: number;
+  rankScore: number;
 };
 
 type ChartRow = {
@@ -30,38 +34,134 @@ type ChartRow = {
   value: number;
 };
 
+function toSafeNumber(value: unknown, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeSeconds(value: unknown) {
+  return Math.max(0, Math.floor(toSafeNumber(value, 0)));
+}
+
+function normalizeSectionName(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isFinalizedSession(session: {
+  session_end?: string | null;
+}) {
+  return Boolean(session.session_end);
+}
+
 export function SectionAnalytics() {
-  const { data, loading, error } = useSectionEngagement();
+  const {
+    data: sectionEngagement,
+    loading: sectionLoading,
+    error: sectionError,
+  } = useSectionEngagement();
+
+  const {
+    data: sessions,
+    loading: sessionsLoading,
+    error: sessionsError,
+  } = useSessions();
+
+  const finalizedSessionIds = useMemo(() => {
+    return new Set(
+      sessions
+        .filter((session) => isFinalizedSession(session))
+        .map((session) => session.session_id)
+    );
+  }, [sessions]);
 
   const sectionStats = useMemo<SectionStat[]>(() => {
-    const map: Record<string, { total: number; count: number }> = {};
+    const map = new Map<
+      string,
+      {
+        totalTime: number;
+        sessionIds: Set<string>;
+      }
+    >();
 
-    for (const row of data) {
-      if (!map[row.section_name]) {
-        map[row.section_name] = { total: 0, count: 0 };
+    for (const row of sectionEngagement) {
+      const sessionId =
+        typeof row.session_id === 'string' ? row.session_id : '';
+
+      if (!sessionId || !finalizedSessionIds.has(sessionId)) continue;
+
+      const rawName = normalizeSectionName(row.section_name);
+      if (!rawName) continue;
+
+      const seconds = normalizeSeconds(row.time_spent_seconds);
+      if (!map.has(rawName)) {
+        map.set(rawName, {
+          totalTime: 0,
+          sessionIds: new Set<string>(),
+        });
       }
 
-      map[row.section_name].total += row.time_spent_seconds;
-      map[row.section_name].count += 1;
+      const entry = map.get(rawName)!;
+      entry.totalTime += seconds;
+      entry.sessionIds.add(sessionId);
     }
 
-    return Object.entries(map)
-      .map(([rawName, stats]) => ({
+    const baseStats = Array.from(map.entries()).map(([rawName, stats]) => {
+      const viewCount = stats.sessionIds.size;
+      const totalTime = stats.totalTime;
+      const avgTime = viewCount > 0 ? totalTime / viewCount : 0;
+
+      return {
         rawName,
         name: formatSectionName(rawName),
-        totalTime: stats.total,
-        viewCount: stats.count,
-        avgTime: stats.count > 0 ? stats.total / stats.count : 0,
-      }))
-      .sort((a, b) => b.totalTime - a.totalTime);
-  }, [data]);
+        totalTime,
+        viewCount,
+        avgTime,
+      };
+    });
+
+    const maxTotalTime = Math.max(
+      1,
+      ...baseStats.map((section) => section.totalTime)
+    );
+    const maxViewCount = Math.max(
+      1,
+      ...baseStats.map((section) => section.viewCount)
+    );
+
+    return baseStats
+      .map((section) => {
+        const totalTimeScore = (section.totalTime / maxTotalTime) * 100;
+        const viewScore = (section.viewCount / maxViewCount) * 100;
+
+        const rankScore = Math.round(
+          clamp(totalTimeScore * 0.65 + viewScore * 0.35, 0, 100)
+        );
+
+        return {
+          ...section,
+          rankScore,
+        };
+      })
+      .sort((a, b) => {
+        if (b.rankScore !== a.rankScore) return b.rankScore - a.rankScore;
+        if (b.totalTime !== a.totalTime) return b.totalTime - a.totalTime;
+        if (b.viewCount !== a.viewCount) return b.viewCount - a.viewCount;
+        return a.name.localeCompare(b.name);
+      });
+  }, [sectionEngagement, finalizedSessionIds]);
 
   const totalTimeData = useMemo<ChartRow[]>(
     () =>
-      sectionStats.map((section) => ({
-        name: section.name,
-        value: section.totalTime,
-      })),
+      [...sectionStats]
+        .sort((a, b) => b.totalTime - a.totalTime)
+        .map((section) => ({
+          name: section.name,
+          value: section.totalTime,
+        })),
     [sectionStats]
   );
 
@@ -86,6 +186,9 @@ export function SectionAnalytics() {
         })),
     [sectionStats]
   );
+
+  const loading = sectionLoading || sessionsLoading;
+  const error = sectionError || sessionsError || null;
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
@@ -138,7 +241,7 @@ export function SectionAnalytics() {
 
       <ChartContainer
         title="Average Time per View"
-        subtitle="Average engagement depth for each section visit"
+        subtitle="Average engagement depth for each finalized section visit"
       >
         {avgTimeData.length === 0 ? (
           <EmptyState message="No average time data available yet" />
@@ -165,7 +268,7 @@ export function SectionAnalytics() {
                   borderRadius: 8,
                   fontSize: 12,
                 }}
-                formatter={(value: number) => [`${value}s`, 'Avg Time']}
+                formatter={(value: number) => [formatDuration(value), 'Avg Time']}
               />
               <Bar
                 dataKey="value"
@@ -179,7 +282,7 @@ export function SectionAnalytics() {
 
       <ChartContainer
         title="Most Viewed Sections"
-        subtitle="Sections with the highest number of engagement records"
+        subtitle="Sections with the highest number of unique finalized session visits"
       >
         {viewCountData.length === 0 ? (
           <EmptyState message="No section view counts available yet" />

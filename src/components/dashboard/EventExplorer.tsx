@@ -32,40 +32,50 @@ export function EventExplorer() {
   const [sectionFilter, setSectionFilter] = useState<string>('all');
 
   const eventTypes = useMemo(
-    () => [...new Set(events.map((e) => e.event_name))].sort(),
+    () => [...new Set(events.map((e) => e.event_name).filter(Boolean))].sort(),
     [events]
   );
 
-  const sections = useMemo(
-    () =>
-      [...new Set(events.map((e) => e.section).filter(Boolean as unknown as <T>(value: T | null | undefined) => value is T))]
-        .sort(),
-    [events]
-  );
+  const sections = useMemo(() => {
+    return [...new Set(events.map((e) => normalizeText(e.section)).filter(isNonEmptyString))].sort();
+  }, [events]);
 
   const filtered = useMemo(() => {
-    let result = events;
+    let result = [...events];
+
+    result.sort((a, b) => safeTime(b.created_at) - safeTime(a.created_at));
 
     if (eventFilter !== 'all') {
       result = result.filter((e) => e.event_name === eventFilter);
     }
 
     if (sectionFilter !== 'all') {
-      result = result.filter((e) => e.section === sectionFilter);
+      result = result.filter((e) => normalizeText(e.section) === sectionFilter);
     }
 
     if (search.trim()) {
       const q = search.trim().toLowerCase();
 
       result = result.filter((e) => {
+        const props = safeParseJSON<Record<string, unknown>>(e.properties, {});
+        const details = extractDetails(e, props).toLowerCase();
         const propertiesText =
-          typeof e.properties === 'string' ? e.properties.toLowerCase() : '';
+          typeof e.properties === 'string'
+            ? e.properties.toLowerCase()
+            : safeSerialize(props).toLowerCase();
+
+        const sectionText = normalizeText(e.section) ?? '';
+        const pageText = normalizeText((e as AnalyticsEvent & { page?: string | null }).page) ?? '';
+        const visitorText = normalizeText(e.visitor_id) ?? '';
+        const sessionText = normalizeText(e.session_id) ?? '';
 
         return (
           e.event_name.toLowerCase().includes(q) ||
-          e.visitor_id.toLowerCase().includes(q) ||
-          e.session_id.toLowerCase().includes(q) ||
-          (e.section ? e.section.toLowerCase().includes(q) : false) ||
+          visitorText.toLowerCase().includes(q) ||
+          sessionText.toLowerCase().includes(q) ||
+          sectionText.toLowerCase().includes(q) ||
+          pageText.toLowerCase().includes(q) ||
+          details.includes(q) ||
           propertiesText.includes(q)
         );
       });
@@ -149,7 +159,7 @@ export function EventExplorer() {
                       className="border-b border-border/50 transition-colors hover:bg-muted/30"
                     >
                       <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
-                        {timeAgo(event.created_at)}
+                        {safeTime(event.created_at) === 0 ? '—' : timeAgo(event.created_at)}
                       </td>
 
                       <td className="px-3 py-2">
@@ -193,9 +203,51 @@ export function EventExplorer() {
   );
 }
 
+function isNonEmptyString(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeText(value: string | null | undefined) {
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  return normalized.length > 0 ? normalized : null;
+}
+
+function safeTime(value: string | null | undefined) {
+  const t = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
 function shortId(value: string | null | undefined) {
   if (!value) return '—';
   return value.length > 8 ? `${value.slice(0, 8)}…` : value;
+}
+
+function safeValueToString(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function safeSerialize(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return '';
+  }
 }
 
 function extractDetails(
@@ -205,49 +257,55 @@ function extractDetails(
   switch (event.event_name) {
     case 'nav_click':
       return joinParts([
-        props.label ? String(props.label) : null,
-        props.target ? `→ ${String(props.target)}` : null,
-        props.location ? `(${String(props.location)})` : null,
+        props.label ? safeValueToString(props.label) : null,
+        props.target ? `→ ${safeValueToString(props.target)}` : null,
+        props.location ? `(${safeValueToString(props.location)})` : null,
       ]);
 
     case 'project_card_click':
       return joinParts([
-        props.project_name ? `Project: ${String(props.project_name)}` : null,
-        props.method ? `Method: ${String(props.method)}` : null,
-        props.position !== undefined ? `Position: ${String(props.position)}` : null,
+        props.project_name
+          ? `Project: ${safeValueToString(props.project_name)}`
+          : null,
+        props.method ? `Method: ${safeValueToString(props.method)}` : null,
+        props.position !== undefined
+          ? `Position: ${safeValueToString(props.position)}`
+          : null,
       ]);
 
     case 'social_click':
       return joinParts([
-        props.platform ? `Platform: ${String(props.platform)}` : null,
-        props.location ? `Location: ${String(props.location)}` : null,
+        props.platform ? `Platform: ${safeValueToString(props.platform)}` : null,
+        props.location ? `Location: ${safeValueToString(props.location)}` : null,
       ]);
 
     case 'cert_card_click':
       return joinParts([
-        props.cert_name ? String(props.cert_name) : null,
-        props.issuer ? `by ${String(props.issuer)}` : null,
+        props.cert_name ? safeValueToString(props.cert_name) : null,
+        props.issuer ? `by ${safeValueToString(props.issuer)}` : null,
       ]);
 
     case 'cert_nav_click':
       return joinParts([
-        props.direction ? `Direction: ${String(props.direction)}` : null,
-        props.cert_name ? `Cert: ${String(props.cert_name)}` : null,
-        props.issuer ? `Issuer: ${String(props.issuer)}` : null,
+        props.direction
+          ? `Direction: ${safeValueToString(props.direction)}`
+          : null,
+        props.cert_name ? `Cert: ${safeValueToString(props.cert_name)}` : null,
+        props.issuer ? `Issuer: ${safeValueToString(props.issuer)}` : null,
       ]);
 
     case 'scroll_depth':
-      return `Depth: ${String(props.depth ?? 0)}%`;
+      return `Depth: ${safeValueToString(props.depth ?? 0)}%`;
 
     case 'scroll_to_top':
       return joinParts([
         props.scroll_position !== undefined
-          ? `From position: ${String(props.scroll_position)}`
+          ? `From position: ${safeValueToString(props.scroll_position)}`
           : null,
       ]);
 
     case 'resume_download':
-      return `Source: ${String(props.source ?? 'unknown')}`;
+      return `Source: ${safeValueToString(props.source ?? 'unknown')}`;
 
     case 'contact_submit_success':
       return 'Contact form submitted successfully';
@@ -255,36 +313,38 @@ function extractDetails(
     case 'contact_submit_attempt':
       return joinParts([
         props.message_len !== undefined
-          ? `Message: ${String(props.message_len)} chars`
+          ? `Message: ${safeValueToString(props.message_len)} chars`
           : null,
         props.subject_len !== undefined
-          ? `Subject: ${String(props.subject_len)} chars`
+          ? `Subject: ${safeValueToString(props.subject_len)} chars`
           : null,
       ]);
 
     case 'contact_submit_failure':
       return joinParts([
-        props.status ? `Status: ${String(props.status)}` : null,
-        props.reason ? `Reason: ${String(props.reason)}` : null,
+        props.status ? `Status: ${safeValueToString(props.status)}` : null,
+        props.reason ? `Reason: ${safeValueToString(props.reason)}` : null,
       ]);
 
     case 'section_view_end':
       return joinParts([
-        props.section ? `Section: ${String(props.section)}` : null,
+        props.section ? `Section: ${safeValueToString(props.section)}` : null,
         props.time_spent_seconds !== undefined
-          ? `Time: ${String(props.time_spent_seconds)}s`
+          ? `Time: ${safeValueToString(props.time_spent_seconds)}s`
           : null,
-        props.reason ? `Reason: ${String(props.reason)}` : null,
+        props.reason ? `Reason: ${safeValueToString(props.reason)}` : null,
       ]);
 
     case 'section_view_start':
-      return props.section ? `Section: ${String(props.section)}` : 'Section view started';
+      return props.section
+        ? `Section: ${safeValueToString(props.section)}`
+        : 'Section view started';
 
     default: {
       const visibleEntries = Object.entries(props)
         .filter(([key]) => !key.startsWith('_'))
         .slice(0, 4)
-        .map(([key, value]) => `${key}: ${String(value)}`);
+        .map(([key, value]) => `${key}: ${safeValueToString(value)}`);
 
       return visibleEntries.join(', ');
     }
@@ -292,5 +352,5 @@ function extractDetails(
 }
 
 function joinParts(parts: Array<string | null | undefined>) {
-  return parts.filter(Boolean).join(' ');
+  return parts.filter((part): part is string => Boolean(part && part.trim())).join(' ');
 }

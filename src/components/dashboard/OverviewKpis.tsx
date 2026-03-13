@@ -31,10 +31,21 @@ const RESUME_EVENT = 'resume_download';
 const CONTACT_SUCCESS_EVENT = 'contact_submit_success';
 const PROJECT_CLICK_EVENT = 'project_card_click';
 
-function toSafeNumber(value: unknown, fallback = 0) {
+function toSafeNumber(value: unknown, fallback = 0): number {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
+
+type SessionEventFlags = {
+  hasResume: boolean;
+  hasContact: boolean;
+  hasProjectInterest: boolean;
+};
+
+type SectionSessionStats = {
+  sections: Set<string>;
+  totalTime: number;
+};
 
 export function OverviewKpis() {
   const {
@@ -68,102 +79,137 @@ export function OverviewKpis() {
   } = useSectionEngagement();
 
   const kpis = useMemo(() => {
-    const latestMetric = metrics.length > 0 ? metrics[metrics.length - 1] : null;
+    const latestMetric =
+      metrics.length > 0 ? metrics[metrics.length - 1] : null;
 
     const totalVisitors = visitors.length;
-
     const totalSessions = sessions.length;
 
+    const endedSessions = sessions.filter(
+      (session) => Boolean(session.session_end) && session.duration_seconds != null
+    );
+
+    const endedSessionCount = endedSessions.length;
+
     const avgDuration =
-      sessions.length > 0
-        ? sessions.reduce(
+      endedSessionCount > 0
+        ? endedSessions.reduce(
             (sum, session) => sum + toSafeNumber(session.duration_seconds),
             0
-          ) / sessions.length
+          ) / endedSessionCount
         : latestMetric?.avg_session_duration != null
-        ? toSafeNumber(latestMetric.avg_session_duration)
-        : 0;
+          ? toSafeNumber(latestMetric.avg_session_duration)
+          : 0;
 
     const bounceRate =
-      sessions.length > 0
-        ? (sessions.filter((session) => Boolean(session.is_bounce)).length /
-            sessions.length) *
+      endedSessionCount > 0
+        ? (endedSessions.filter((session) => Boolean(session.is_bounce)).length /
+            endedSessionCount) *
           100
         : latestMetric?.bounce_rate != null
-        ? toSafeNumber(latestMetric.bounce_rate) * 100
-        : 0;
+          ? toSafeNumber(latestMetric.bounce_rate) * 100
+          : 0;
 
-    const resumeDownloads = events.filter(
-      (event) => event.event_name === RESUME_EVENT
-    ).length;
+    let resumeDownloads = 0;
+    let contactSubmits = 0;
+    let projectClicks = 0;
 
-    const contactSubmits = events.filter(
-      (event) => event.event_name === CONTACT_SUCCESS_EVENT
-    ).length;
+    const eventFlagsBySession: Record<string, SessionEventFlags> = {};
 
-    const projectClicks = events.filter(
-      (event) => event.event_name === PROJECT_CLICK_EVENT
-    ).length;
+    for (const event of events) {
+      if (event.event_name === RESUME_EVENT) resumeDownloads += 1;
+      if (event.event_name === CONTACT_SUCCESS_EVENT) contactSubmits += 1;
+      if (event.event_name === PROJECT_CLICK_EVENT) projectClicks += 1;
+
+      if (!event.session_id) continue;
+
+      if (!eventFlagsBySession[event.session_id]) {
+        eventFlagsBySession[event.session_id] = {
+          hasResume: false,
+          hasContact: false,
+          hasProjectInterest: false,
+        };
+      }
+
+      if (event.event_name === RESUME_EVENT) {
+        eventFlagsBySession[event.session_id].hasResume = true;
+      }
+
+      if (event.event_name === CONTACT_SUCCESS_EVENT) {
+        eventFlagsBySession[event.session_id].hasContact = true;
+      }
+
+      if (event.event_name === PROJECT_CLICK_EVENT) {
+        eventFlagsBySession[event.session_id].hasProjectInterest = true;
+      }
+    }
 
     const totalConversions = resumeDownloads + contactSubmits;
 
-    const uniqueEngagedSessions = new Set(
+    const uniqueEngagedSessions = new Set<string>(
       sectionEngagement
         .map((row) => row.session_id)
-        .filter((sessionId): sessionId is string => Boolean(sessionId))
+        .filter((sessionId): sessionId is string => !!sessionId)
     );
+
+    const sectionStatsBySession: Record<string, SectionSessionStats> = {};
+
+    for (const row of sectionEngagement) {
+      if (!row.session_id) continue;
+
+      if (!sectionStatsBySession[row.session_id]) {
+        sectionStatsBySession[row.session_id] = {
+          sections: new Set<string>(),
+          totalTime: 0,
+        };
+      }
+
+      if (row.section_name) {
+        sectionStatsBySession[row.session_id].sections.add(row.section_name);
+      }
+
+      sectionStatsBySession[row.session_id].totalTime += toSafeNumber(
+        row.time_spent_seconds
+      );
+    }
 
     const avgEngagement =
       latestMetric?.avg_engagement_score != null
         ? toSafeNumber(latestMetric.avg_engagement_score)
         : (() => {
-            if (sessions.length === 0) return 0;
+            if (endedSessionCount === 0) return 0;
 
             let totalScore = 0;
 
-            for (const session of sessions) {
+            for (const session of endedSessions) {
               const sessionId = session.session_id;
-              const hasResume = events.some(
-                (event) =>
-                  event.session_id === sessionId &&
-                  event.event_name === RESUME_EVENT
-              );
-              const hasContact = events.some(
-                (event) =>
-                  event.session_id === sessionId &&
-                  event.event_name === CONTACT_SUCCESS_EVENT
-              );
-              const hasProjectInterest = events.some(
-                (event) =>
-                  event.session_id === sessionId &&
-                  event.event_name === PROJECT_CLICK_EVENT
-              );
+              const flags = eventFlagsBySession[sessionId] || {
+                hasResume: false,
+                hasContact: false,
+                hasProjectInterest: false,
+              };
 
-              const sectionCount = sectionEngagement
-                .filter((row) => row.session_id === sessionId)
-                .reduce((set, row) => set.add(row.section_name), new Set<string>())
-                .size;
-
-              const sectionTime = sectionEngagement
-                .filter((row) => row.session_id === sessionId)
-                .reduce(
-                  (sum, row) => sum + toSafeNumber(row.time_spent_seconds),
-                  0
-                );
+              const sectionStats = sectionStatsBySession[sessionId];
+              const sectionCount = sectionStats ? sectionStats.sections.size : 0;
+              const sectionTime = sectionStats
+                ? toSafeNumber(sectionStats.totalTime)
+                : 0;
 
               let score = 0;
+
               score += Math.min(toSafeNumber(session.duration_seconds) / 20, 20);
               score += session.is_bounce ? 0 : 10;
               score += Math.min(sectionCount * 5, 20);
               score += Math.min(sectionTime / 6, 20);
-              if (hasProjectInterest) score += 10;
-              if (hasResume) score += 20;
-              if (hasContact) score += 20;
+
+              if (flags.hasProjectInterest) score += 10;
+              if (flags.hasResume) score += 20;
+              if (flags.hasContact) score += 20;
 
               totalScore += Math.min(100, Math.round(score));
             }
 
-            return totalScore / sessions.length;
+            return totalScore / endedSessionCount;
           })();
 
     const returning = visitors.filter(
@@ -177,11 +223,11 @@ export function OverviewKpis() {
     const activeReaders = uniqueEngagedSessions.size;
 
     const avgActiveSectionTime =
-      uniqueEngagedSessions.size > 0
+      activeReaders > 0
         ? sectionEngagement.reduce(
             (sum, row) => sum + toSafeNumber(row.time_spent_seconds),
             0
-          ) / uniqueEngagedSessions.size
+          ) / activeReaders
         : 0;
 
     return {
@@ -239,14 +285,14 @@ export function OverviewKpis() {
         title="Avg Duration"
         value={formatDuration(kpis.avgDuration)}
         icon={<Clock className="h-4 w-4" />}
-        tooltip="Average session duration across all tracked sessions."
+        tooltip="Average session duration across completed tracked sessions."
       />
 
       <KpiCard
         title="Bounce Rate"
         value={formatPercent(kpis.bounceRate)}
         icon={<BarChart3 className="h-4 w-4" />}
-        tooltip="Percentage of sessions marked as bounce in the sessions table."
+        tooltip="Percentage of completed sessions marked as bounce in the sessions table."
       />
 
       <KpiCard

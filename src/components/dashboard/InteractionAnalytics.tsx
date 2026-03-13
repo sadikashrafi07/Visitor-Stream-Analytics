@@ -27,6 +27,13 @@ const EVENT_SOCIAL_CLICK = 'social_click';
 const EVENT_CERT_CLICK = 'cert_card_click';
 const EVENT_CERT_NAV_CLICK = 'cert_nav_click';
 
+function normalizeText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  return normalized.length > 0 ? normalized : null;
+}
+
 function toTitleCase(value: string) {
   if (!value) return value;
 
@@ -40,24 +47,50 @@ function toTitleCase(value: string) {
 function sortCountMap(map: Record<string, number>): CountRow[] {
   return Object.entries(map)
     .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value);
+    .sort((a, b) => {
+      if (b.value !== a.value) return b.value - a.value;
+      return a.name.localeCompare(b.name);
+    });
 }
 
 function increment(
   map: Record<string, number>,
-  key: string | null | undefined
+  key: string | null | undefined,
+  amount = 1
 ) {
   if (!key) return;
 
-  const normalized = String(key).trim();
+  const normalized = normalizeText(key);
   if (!normalized) return;
 
-  map[normalized] = (map[normalized] || 0) + 1;
+  map[normalized] = (map[normalized] || 0) + amount;
 }
 
 function shortSessionId(sessionId: string | null | undefined) {
-  if (!sessionId) return 'Unknown';
-  return `${sessionId.slice(0, 8)}…`;
+  const normalized = normalizeText(sessionId);
+  if (!normalized) return 'Unknown';
+  return `${normalized.slice(0, 8)}…`;
+}
+
+function getEventProps(event: { properties: unknown }) {
+  return safeParseJSON<Record<string, unknown>>(event.properties, {});
+}
+
+function getNormalizedProjectName(props: Record<string, unknown>) {
+  return normalizeText(props.project_name);
+}
+
+function getNormalizedPlatform(props: Record<string, unknown>) {
+  const platform = normalizeText(props.platform);
+  return platform ? toTitleCase(platform.toLowerCase()) : null;
+}
+
+function getNormalizedCertName(props: Record<string, unknown>) {
+  return normalizeText(props.cert_name);
+}
+
+function getNormalizedIssuer(props: Record<string, unknown>) {
+  return normalizeText(props.issuer);
 }
 
 export function ProjectAnalytics() {
@@ -73,28 +106,29 @@ export function ProjectAnalytics() {
     for (const event of events) {
       if (event.event_name !== EVENT_PROJECT_CLICK) continue;
 
-      totalProjectClicks += 1;
+      const props = getEventProps(event);
+      const projectName = getNormalizedProjectName(props);
 
-      const props = safeParseJSON<Record<string, unknown>>(event.properties, {});
-      const projectName =
-        typeof props.project_name === 'string' ? props.project_name.trim() : '';
+      totalProjectClicks += 1;
 
       if (!projectName) continue;
 
       increment(projectCounts, projectName);
 
-      if (event.session_id) {
-        const existingSessionProjects =
-          projectsBySession.get(event.session_id) ?? new Set<string>();
-        existingSessionProjects.add(projectName);
-        projectsBySession.set(event.session_id, existingSessionProjects);
+      const sessionId = normalizeText(event.session_id);
+      if (sessionId) {
+        if (!projectsBySession.has(sessionId)) {
+          projectsBySession.set(sessionId, new Set<string>());
+        }
+        projectsBySession.get(sessionId)?.add(projectName);
       }
 
-      if (event.visitor_id) {
-        const existingVisitorProjects =
-          projectsByVisitor.get(event.visitor_id) ?? new Set<string>();
-        existingVisitorProjects.add(projectName);
-        projectsByVisitor.set(event.visitor_id, existingVisitorProjects);
+      const visitorId = normalizeText(event.visitor_id);
+      if (visitorId) {
+        if (!projectsByVisitor.has(visitorId)) {
+          projectsByVisitor.set(visitorId, new Set<string>());
+        }
+        projectsByVisitor.get(visitorId)?.add(projectName);
       }
     }
 
@@ -125,7 +159,10 @@ export function ProjectAnalytics() {
         name: shortSessionId(sessionId),
         value: projectSet.size,
       }))
-      .sort((a, b) => b.value - a.value)
+      .sort((a, b) => {
+        if (b.value !== a.value) return b.value - a.value;
+        return a.name.localeCompare(b.name);
+      })
       .slice(0, 10);
 
     return {
@@ -314,16 +351,10 @@ export function SocialAnalytics() {
     for (const event of events) {
       if (event.event_name !== EVENT_SOCIAL_CLICK) continue;
 
+      const props = getEventProps(event);
+      const platform = getNormalizedPlatform(props);
+
       totalSocialClicks += 1;
-
-      const props = safeParseJSON<Record<string, unknown>>(
-        event.properties,
-        {}
-      );
-
-      const platform =
-        typeof props.platform === 'string' ? toTitleCase(props.platform) : null;
-
       increment(socialCounts, platform);
     }
 
@@ -419,18 +450,11 @@ export function CertificationAnalytics() {
 
     for (const event of events) {
       if (event.event_name === EVENT_CERT_CLICK) {
+        const props = getEventProps(event);
+        const certName = getNormalizedCertName(props);
+        const issuer = getNormalizedIssuer(props);
+
         totalCertClicks += 1;
-
-        const props = safeParseJSON<Record<string, unknown>>(
-          event.properties,
-          {}
-        );
-
-        const certName =
-          typeof props.cert_name === 'string' ? props.cert_name : null;
-        const issuer =
-          typeof props.issuer === 'string' ? props.issuer : null;
-
         increment(certClickCounts, certName);
         increment(issuerClickCounts, issuer);
       }
@@ -438,9 +462,10 @@ export function CertificationAnalytics() {
       if (event.event_name === EVENT_CERT_NAV_CLICK) {
         totalCertNavClicks += 1;
 
-        if (event.session_id) {
-          navClicksBySession[event.session_id] =
-            (navClicksBySession[event.session_id] || 0) + 1;
+        const sessionId = normalizeText(event.session_id);
+        if (sessionId) {
+          navClicksBySession[sessionId] =
+            (navClicksBySession[sessionId] || 0) + 1;
         }
       }
     }
@@ -453,7 +478,10 @@ export function CertificationAnalytics() {
         name: shortSessionId(sessionId),
         value,
       }))
-      .sort((a, b) => b.value - a.value);
+      .sort((a, b) => {
+        if (b.value !== a.value) return b.value - a.value;
+        return a.name.localeCompare(b.name);
+      });
 
     const browsingSessions = browsingSessionData.length;
     const avgNavClicksPerBrowsingSession =

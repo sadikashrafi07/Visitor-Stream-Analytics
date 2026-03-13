@@ -14,11 +14,32 @@ import {
   LoadingState,
   ErrorState,
 } from './ChartContainer';
-import { useVisitors } from '@/hooks/useAnalyticsData';
+import { useVisitors, useSessions } from '@/hooks/useAnalyticsData';
 
 type ChartRow = {
   name: string;
   value: number;
+};
+
+type VisitorRow = {
+  visitor_id: string;
+  first_visit_at: string;
+  last_visit_at: string;
+  total_sessions: number;
+};
+
+type SessionRow = {
+  session_id: string;
+  visitor_id: string;
+  session_start: string | null;
+  session_end: string | null;
+};
+
+type DerivedVisitorStat = {
+  visitor_id: string;
+  first_visit_at: string;
+  last_visit_at: string;
+  actual_sessions: number;
 };
 
 function getDayDifference(start: string, end: string) {
@@ -32,11 +53,54 @@ function getDayDifference(start: string, end: string) {
 }
 
 export function ReturningVisitorAnalytics() {
-  const { data: visitors, loading, error } = useVisitors();
+  const {
+    data: visitors,
+    loading: visitorsLoading,
+    error: visitorsError,
+  } = useVisitors();
+
+  const {
+    data: sessions,
+    loading: sessionsLoading,
+    error: sessionsError,
+  } = useSessions();
 
   const derived = useMemo(() => {
-    const returning = visitors.filter((visitor) => visitor.total_sessions > 1);
-    const frequent = visitors.filter((visitor) => visitor.total_sessions >= 3);
+    const visitorById = new Map<string, VisitorRow>();
+    const sessionCountByVisitor = new Map<string, number>();
+
+    for (const visitor of visitors) {
+      if (!visitor?.visitor_id) continue;
+      visitorById.set(visitor.visitor_id, visitor as VisitorRow);
+    }
+
+    for (const session of sessions) {
+      if (!session?.visitor_id) continue;
+
+      sessionCountByVisitor.set(
+        session.visitor_id,
+        (sessionCountByVisitor.get(session.visitor_id) ?? 0) + 1
+      );
+    }
+
+    const visitorStats: DerivedVisitorStat[] = Array.from(
+      sessionCountByVisitor.entries()
+    )
+      .map(([visitorId, actualSessions]) => {
+        const visitor = visitorById.get(visitorId);
+        if (!visitor) return null;
+
+        return {
+          visitor_id: visitorId,
+          first_visit_at: visitor.first_visit_at,
+          last_visit_at: visitor.last_visit_at,
+          actual_sessions: actualSessions,
+        };
+      })
+      .filter((row): row is DerivedVisitorStat => Boolean(row));
+
+    const returning = visitorStats.filter((visitor) => visitor.actual_sessions > 1);
+    const frequent = visitorStats.filter((visitor) => visitor.actual_sessions >= 3);
 
     const revisitBucketCounts: Record<string, number> = {
       'Same Day': 0,
@@ -55,17 +119,15 @@ export function ReturningVisitorAnalytics() {
 
     let totalReturnGapDays = 0;
 
-    for (const visitor of visitors) {
-      const sessionBucket =
-        visitor.total_sessions >= 5 ? '5+' : String(visitor.total_sessions);
+    for (const visitor of visitorStats) {
+      const bucketKey =
+        visitor.actual_sessions >= 5 ? '5+' : String(visitor.actual_sessions);
 
-      sessionCountMap[sessionBucket] =
-        (sessionCountMap[sessionBucket] || 0) + 1;
+      sessionCountMap[bucketKey] = (sessionCountMap[bucketKey] || 0) + 1;
     }
 
     for (const visitor of returning) {
       const days = getDayDifference(visitor.first_visit_at, visitor.last_visit_at);
-
       totalReturnGapDays += days;
 
       if (days < 1) revisitBucketCounts['Same Day'] += 1;
@@ -84,7 +146,7 @@ export function ReturningVisitorAnalytics() {
     const sessionCountDistribution: ChartRow[] = ['1', '2', '3', '4', '5+']
       .filter((key) => sessionCountMap[key] > 0)
       .map((key) => ({
-        name: key === '1' ? '1 session' : `${key} sessions`,
+        name: key === '1' ? '1 session' : key === '5+' ? '5+ sessions' : `${key} sessions`,
         value: sessionCountMap[key],
       }));
 
@@ -92,13 +154,17 @@ export function ReturningVisitorAnalytics() {
       returning.length > 0 ? totalReturnGapDays / returning.length : 0;
 
     return {
+      allVisitorsWithSessions: visitorStats,
       returning,
       frequent,
       revisitBuckets,
       sessionCountDistribution,
       averageReturnGapDays,
     };
-  }, [visitors]);
+  }, [visitors, sessions]);
+
+  const loading = visitorsLoading || sessionsLoading;
+  const error = visitorsError || sessionsError || null;
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;

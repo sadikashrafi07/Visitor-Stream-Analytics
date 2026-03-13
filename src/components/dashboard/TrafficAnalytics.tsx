@@ -43,6 +43,32 @@ type DailyTrafficRow = {
   sessions: number;
 };
 
+type VisitorRow = {
+  visitor_id: string;
+  country: string | null;
+  device_type: string | null;
+  browser: string | null;
+  os: string | null;
+  referrer: string | null;
+  first_utm_source: string | null;
+  first_utm_medium: string | null;
+  first_utm_campaign: string | null;
+  first_utm_content: string | null;
+  first_utm_term: string | null;
+  total_sessions?: number | null;
+};
+
+type SessionRow = {
+  session_id: string;
+  visitor_id: string;
+  session_end: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
+};
+
 function normalizeLabel(value: string | null | undefined, fallback: string) {
   const text = typeof value === 'string' ? value.trim() : '';
   return text || fallback;
@@ -60,14 +86,39 @@ function toTitleCase(value: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function normalizeCountryLabel(value: string | null | undefined) {
+  const normalized = normalizeLabel(value, 'Unknown');
+  return normalized === 'Unknown' ? normalized : normalized.toUpperCase();
+}
+
+function normalizeDeviceLabel(value: string | null | undefined) {
+  const normalized = normalizeLabel(value, 'Unknown');
+  return normalized === 'Unknown' ? normalized : toTitleCase(normalized);
+}
+
+function normalizeBrowserLabel(value: string | null | undefined) {
+  const normalized = normalizeLabel(value, 'Unknown');
+  return normalized === 'Unknown' ? normalized : toTitleCase(normalized);
+}
+
+function normalizeOsLabel(value: string | null | undefined) {
+  const normalized = normalizeLabel(value, 'Unknown');
+  return normalized === 'Unknown' ? normalized : toTitleCase(normalized);
+}
+
+function normalizeReferrerLabel(value: string | null | undefined) {
+  const normalized = normalizeLabel(value, 'Direct');
+  return truncateLabel(normalized, 32);
+}
+
 function buildCountRows(
   values: Array<string | null | undefined>,
-  fallback: string
+  formatter: (value: string | null | undefined) => string
 ): ChartRow[] {
   const counts: Record<string, number> = {};
 
   for (const value of values) {
-    const normalized = normalizeLabel(value, fallback);
+    const normalized = formatter(value);
     counts[normalized] = (counts[normalized] || 0) + 1;
   }
 
@@ -97,13 +148,7 @@ function buildAcquisitionRows(
   }));
 }
 
-function hasAnySessionUtm(session: {
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
-  utm_content: string | null;
-  utm_term: string | null;
-}) {
+function hasAnySessionUtm(session: SessionRow) {
   return Boolean(
     session.utm_source ||
       session.utm_medium ||
@@ -113,13 +158,7 @@ function hasAnySessionUtm(session: {
   );
 }
 
-function hasAnyVisitorFirstTouch(visitor: {
-  first_utm_source: string | null;
-  first_utm_medium: string | null;
-  first_utm_campaign: string | null;
-  first_utm_content: string | null;
-  first_utm_term: string | null;
-}) {
+function hasAnyVisitorFirstTouch(visitor: VisitorRow) {
   return Boolean(
     visitor.first_utm_source ||
       visitor.first_utm_medium ||
@@ -135,6 +174,10 @@ function hasMeaningfulAttribution(data: ChartRow[], fallback: string) {
 
 function formatCountTooltipLabel(name: string) {
   return name === 'value' ? 'Count' : name;
+}
+
+function isFinalizedSession(session: SessionRow) {
+  return Boolean(session.session_end);
 }
 
 export function TrafficAnalytics() {
@@ -156,6 +199,23 @@ export function TrafficAnalytics() {
     error: sessionsError,
   } = useSessions();
 
+  const finalizedSessions = useMemo(
+    () => sessions.filter((session) => isFinalizedSession(session)),
+    [sessions]
+  );
+
+  const visitorIdsWithSessions = useMemo(() => {
+    return new Set(sessions.map((session) => session.visitor_id).filter(Boolean));
+  }, [sessions]);
+
+  const activeVisitors = useMemo(() => {
+    return visitors.filter(
+      (visitor) =>
+        Boolean(visitor.visitor_id) &&
+        visitorIdsWithSessions.has(visitor.visitor_id)
+    );
+  }, [visitors, visitorIdsWithSessions]);
+
   const dailyData = useMemo<DailyTrafficRow[]>(
     () =>
       metrics.map((metric) => ({
@@ -167,36 +227,48 @@ export function TrafficAnalytics() {
   );
 
   const countryData = useMemo<ChartRow[]>(
-    () => buildCountRows(visitors.map((visitor) => visitor.country), 'Unknown'),
-    [visitors]
+    () =>
+      buildCountRows(
+        activeVisitors.map((visitor) => visitor.country),
+        normalizeCountryLabel
+      ),
+    [activeVisitors]
   );
 
   const deviceData = useMemo<ChartRow[]>(
     () =>
-      buildCountRows(visitors.map((visitor) => visitor.device_type), 'Unknown'),
-    [visitors]
+      buildCountRows(
+        activeVisitors.map((visitor) => visitor.device_type),
+        normalizeDeviceLabel
+      ),
+    [activeVisitors]
   );
 
   const browserData = useMemo<ChartRow[]>(
-    () => buildCountRows(visitors.map((visitor) => visitor.browser), 'Unknown'),
-    [visitors]
+    () =>
+      buildCountRows(
+        activeVisitors.map((visitor) => visitor.browser),
+        normalizeBrowserLabel
+      ),
+    [activeVisitors]
   );
 
   const osData = useMemo<ChartRow[]>(
-    () => buildCountRows(visitors.map((visitor) => visitor.os), 'Unknown'),
-    [visitors]
+    () =>
+      buildCountRows(
+        activeVisitors.map((visitor) => visitor.os),
+        normalizeOsLabel
+      ),
+    [activeVisitors]
   );
 
   const referrerData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        visitors.map((visitor) => visitor.referrer),
-        'Direct'
-      ).map((row) => ({
-        ...row,
-        name: truncateLabel(row.name, 32),
-      })),
-    [visitors]
+        activeVisitors.map((visitor) => visitor.referrer),
+        normalizeReferrerLabel
+      ),
+    [activeVisitors]
   );
 
   const firstTouchSourceFallback = 'Organic / Direct';
@@ -209,69 +281,69 @@ export function TrafficAnalytics() {
   const firstTouchSourceData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        visitors.map((visitor) => visitor.first_utm_source),
+        activeVisitors.map((visitor) => visitor.first_utm_source),
         firstTouchSourceFallback
       ),
-    [visitors]
+    [activeVisitors]
   );
 
   const firstTouchMediumData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        visitors.map((visitor) => visitor.first_utm_medium),
+        activeVisitors.map((visitor) => visitor.first_utm_medium),
         firstTouchMediumFallback
       ),
-    [visitors]
+    [activeVisitors]
   );
 
   const firstTouchCampaignData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        visitors.map((visitor) => visitor.first_utm_campaign),
+        activeVisitors.map((visitor) => visitor.first_utm_campaign),
         firstTouchCampaignFallback
       ).map((row) => ({
         ...row,
         name: truncateLabel(row.name, 28),
       })),
-    [visitors]
+    [activeVisitors]
   );
 
   const sessionSourceData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        sessions.map((session) => session.utm_source),
+        finalizedSessions.map((session) => session.utm_source),
         sessionSourceFallback
       ),
-    [sessions]
+    [finalizedSessions]
   );
 
   const sessionMediumData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        sessions.map((session) => session.utm_medium),
+        finalizedSessions.map((session) => session.utm_medium),
         sessionMediumFallback
       ),
-    [sessions]
+    [finalizedSessions]
   );
 
   const sessionCampaignData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        sessions.map((session) => session.utm_campaign),
+        finalizedSessions.map((session) => session.utm_campaign),
         sessionCampaignFallback
       ).map((row) => ({
         ...row,
         name: truncateLabel(row.name, 28),
       })),
-    [sessions]
+    [finalizedSessions]
   );
 
   const attributionSummary = useMemo(() => {
-    const totalVisitors = visitors.length;
-    const totalSessions = sessions.length;
+    const totalVisitors = activeVisitors.length;
+    const totalSessions = finalizedSessions.length;
 
-    const attributedVisitors = visitors.filter(hasAnyVisitorFirstTouch).length;
-    const taggedSessions = sessions.filter(hasAnySessionUtm).length;
+    const attributedVisitors = activeVisitors.filter(hasAnyVisitorFirstTouch).length;
+    const taggedSessions = finalizedSessions.filter(hasAnySessionUtm).length;
 
     const firstTouchSourceTop =
       firstTouchSourceData.find((row) => row.name !== firstTouchSourceFallback) ??
@@ -287,9 +359,9 @@ export function TrafficAnalytics() {
       totalVisitors,
       totalSessions,
       attributedVisitors,
-      unattributedVisitors: totalVisitors - attributedVisitors,
+      unattributedVisitors: Math.max(0, totalVisitors - attributedVisitors),
       taggedSessions,
-      untaggedSessions: totalSessions - taggedSessions,
+      untaggedSessions: Math.max(0, totalSessions - taggedSessions),
       attributedVisitorRate:
         totalVisitors > 0 ? (attributedVisitors / totalVisitors) * 100 : 0,
       taggedSessionRate:
@@ -297,7 +369,12 @@ export function TrafficAnalytics() {
       firstTouchSourceTop,
       sessionSourceTop,
     };
-  }, [visitors, sessions, firstTouchSourceData, sessionSourceData]);
+  }, [
+    activeVisitors,
+    finalizedSessions,
+    firstTouchSourceData,
+    sessionSourceData,
+  ]);
 
   const isLoading = metricsLoading || visitorsLoading || sessionsLoading;
   const error = metricsError || visitorsError || sessionsError || null;
@@ -328,7 +405,7 @@ export function TrafficAnalytics() {
             {attributionSummary.sessionSourceTop?.name ?? '—'}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Source recorded on individual sessions
+            Source recorded on finalized sessions
           </p>
         </div>
 
@@ -353,7 +430,7 @@ export function TrafficAnalytics() {
             {formatNumber(attributionSummary.taggedSessions)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {formatPercent(attributionSummary.taggedSessionRate)} of sessions
+            {formatPercent(attributionSummary.taggedSessionRate)} of finalized sessions
             carry session-level UTM tags
           </p>
         </div>
@@ -494,7 +571,7 @@ export function TrafficAnalytics() {
 
       <AttributionBarChartCard
         title="Session Source"
-        subtitle="UTM source recorded for individual sessions"
+        subtitle="UTM source recorded for finalized sessions"
         data={sessionSourceData}
         fallbackLabel={sessionSourceFallback}
         emptyMessage="No session-level UTM source tagging detected yet"
@@ -503,7 +580,7 @@ export function TrafficAnalytics() {
 
       <AttributionBarChartCard
         title="Session Medium"
-        subtitle="UTM medium distribution across sessions"
+        subtitle="UTM medium distribution across finalized sessions"
         data={sessionMediumData}
         fallbackLabel={sessionMediumFallback}
         emptyMessage="No session-level UTM medium tagging detected yet"
@@ -512,7 +589,7 @@ export function TrafficAnalytics() {
 
       <AttributionBarChartCard
         title="Session Campaign"
-        subtitle="Campaign-tagged sessions based on session-level UTM values"
+        subtitle="Campaign-tagged finalized sessions based on session-level UTM values"
         data={sessionCampaignData}
         fallbackLabel={sessionCampaignFallback}
         emptyMessage="No session-level UTM campaign tagging detected yet"

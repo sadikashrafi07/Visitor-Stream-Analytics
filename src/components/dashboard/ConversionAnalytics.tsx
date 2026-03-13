@@ -16,7 +16,6 @@ import {
 } from './ChartContainer';
 import {
   useDailyMetrics,
-  useEvents,
   useSessions,
 } from '@/hooks/useAnalyticsData';
 import {
@@ -24,9 +23,6 @@ import {
   formatPercent,
   formatNumber,
 } from '@/lib/analytics-utils';
-
-const RESUME_EVENT = 'resume_download';
-const CONTACT_SUCCESS_EVENT = 'contact_submit_success';
 
 type ConversionTrendRow = {
   date: string;
@@ -48,41 +44,44 @@ export function ConversionAnalytics() {
   } = useDailyMetrics();
 
   const {
-    data: events,
-    loading: eventsLoading,
-    error: eventsError,
-  } = useEvents();
-
-  const {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
   } = useSessions();
 
   const derived = useMemo(() => {
-    const resumeEvents = events.filter(
-      (event) => event.event_name === RESUME_EVENT
+    const resumeTotal = metrics.reduce(
+      (sum, metric) => sum + toSafeNumber(metric.resume_downloads),
+      0
     );
 
-    const contactSuccessEvents = events.filter(
-      (event) => event.event_name === CONTACT_SUCCESS_EVENT
+    const contactTotal = metrics.reduce(
+      (sum, metric) => sum + toSafeNumber(metric.contact_submits),
+      0
     );
 
-    const convertedSessionIds = new Set<string>();
-
-    for (const event of resumeEvents) {
-      if (event.session_id) convertedSessionIds.add(event.session_id);
-    }
-
-    for (const event of contactSuccessEvents) {
-      if (event.session_id) convertedSessionIds.add(event.session_id);
-    }
-
-    const resumeTotal = resumeEvents.length;
-    const contactTotal = contactSuccessEvents.length;
     const totalConversionActions = resumeTotal + contactTotal;
-    const conversionSessions = convertedSessionIds.size;
-    const totalSessions = sessions.length;
+
+    const conversionSessionsFromMetrics = metrics.reduce(
+      (sum, metric) => sum + toSafeNumber(metric.total_conversions),
+      0
+    );
+
+    const totalSessionsFromMetrics = metrics.reduce(
+      (sum, metric) => sum + toSafeNumber(metric.total_sessions),
+      0
+    );
+
+    const endedSessionsFallback = sessions.filter(
+      (session) => Boolean(session.session_end)
+    ).length;
+
+    const totalSessions =
+      totalSessionsFromMetrics > 0
+        ? totalSessionsFromMetrics
+        : endedSessionsFallback;
+
+    const conversionSessions = conversionSessionsFromMetrics;
 
     const conversionRate =
       totalSessions > 0 ? (conversionSessions / totalSessions) * 100 : 0;
@@ -126,10 +125,10 @@ export function ConversionAnalytics() {
       contactShare,
       trendData,
     };
-  }, [events, sessions, metrics]);
+  }, [metrics, sessions]);
 
-  const isLoading = metricsLoading || eventsLoading || sessionsLoading;
-  const error = metricsError || eventsError || sessionsError || null;
+  const isLoading = metricsLoading || sessionsLoading;
+  const error = metricsError || sessionsError || null;
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;

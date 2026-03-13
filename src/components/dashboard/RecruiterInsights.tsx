@@ -30,16 +30,81 @@ function sortCountEntries(obj: Record<string, number>) {
   return Object.entries(obj).sort((a, b) => b[1] - a[1]);
 }
 
-function increment(map: Record<string, number>, key: string | null | undefined) {
+function increment(
+  map: Record<string, number>,
+  key: string | null | undefined,
+  amount = 1
+) {
   if (!key) return;
   const normalized = String(key).trim();
   if (!normalized) return;
-  map[normalized] = (map[normalized] || 0) + 1;
+  map[normalized] = (map[normalized] || 0) + amount;
 }
 
 function capitalize(value: string) {
   if (!value) return value;
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function normalizeText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeReferrer(referrer: string | null | undefined) {
+  const raw = normalizeText(referrer);
+  if (!raw) return 'Direct';
+
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+
+    if (!host) return 'Direct';
+    return host;
+  } catch {
+    return raw;
+  }
+}
+
+function normalizeAcquisitionSource(visitor: {
+  first_utm_source: string | null;
+  referrer: string | null;
+}) {
+  const utmSource = normalizeText(visitor.first_utm_source);
+  if (utmSource) return utmSource.toLowerCase();
+
+  return normalizeReferrer(visitor.referrer);
+}
+
+function normalizeProjectName(value: unknown) {
+  const text = normalizeText(value);
+  return text || null;
+}
+
+function normalizeCertName(value: unknown) {
+  const text = normalizeText(value);
+  return text || null;
+}
+
+function normalizeNavTarget(value: unknown) {
+  const text = normalizeText(value);
+  return text || null;
+}
+
+function normalizeSocialPlatform(value: unknown) {
+  const text = normalizeText(value);
+  return text ? capitalize(text.toLowerCase()) : null;
+}
+
+function getLatestMetric<
+  T extends { metric_date: string | null | undefined }
+>(rows: T[]) {
+  if (!rows.length) return null;
+
+  return [...rows].sort((a, b) => {
+    const aTs = new Date(a.metric_date || '').getTime();
+    const bTs = new Date(b.metric_date || '').getTime();
+    return aTs - bTs;
+  })[rows.length - 1] ?? null;
 }
 
 export function RecruiterInsights() {
@@ -79,23 +144,42 @@ export function RecruiterInsights() {
 
     const lines: Insight[] = [];
 
-    // Section insights
-    const sectionMap: Record<string, { total: number; count: number }> = {};
+    /* ------------------------------------------------------------------ */
+    /* Section insights                                                   */
+    /* ------------------------------------------------------------------ */
+
+    const sectionTimeMap: Record<string, number> = {};
+    const uniqueSectionSessionMap = new Map<string, Set<string>>();
 
     for (const row of sectionData) {
-      if (!sectionMap[row.section_name]) {
-        sectionMap[row.section_name] = { total: 0, count: 0 };
+      const sectionName = normalizeText(row.section_name);
+      const sessionId = normalizeText(row.session_id);
+      const seconds = Number(row.time_spent_seconds || 0);
+
+      if (!sectionName) continue;
+
+      sectionTimeMap[sectionName] = (sectionTimeMap[sectionName] || 0) + seconds;
+
+      if (!uniqueSectionSessionMap.has(sectionName)) {
+        uniqueSectionSessionMap.set(sectionName, new Set<string>());
       }
 
-      sectionMap[row.section_name].total += row.time_spent_seconds;
-      sectionMap[row.section_name].count += 1;
+      if (sessionId) {
+        uniqueSectionSessionMap.get(sectionName)?.add(sessionId);
+      }
     }
 
-    const sectionsByTime = Object.entries(sectionMap).sort(
-      (a, b) => b[1].total - a[1].total
+    const sectionViewMap: Record<string, number> = {};
+    for (const [sectionName, sessionIds] of uniqueSectionSessionMap.entries()) {
+      sectionViewMap[sectionName] = sessionIds.size;
+    }
+
+    const sectionsByTime = Object.entries(sectionTimeMap).sort(
+      (a, b) => b[1] - a[1]
     );
-    const sectionsByViews = Object.entries(sectionMap).sort(
-      (a, b) => b[1].count - a[1].count
+
+    const sectionsByViews = Object.entries(sectionViewMap).sort(
+      (a, b) => b[1] - a[1]
     );
 
     if (sectionsByViews[0]) {
@@ -106,7 +190,8 @@ export function RecruiterInsights() {
           <>
             The most visited section is{' '}
             <strong>{formatSectionName(sectionsByViews[0][0])}</strong> with{' '}
-            <strong>{sectionsByViews[0][1].count}</strong> recorded views.
+            <strong>{sectionsByViews[0][1]}</strong> unique engaged session
+            {sectionsByViews[0][1] > 1 ? 's' : ''}.
           </>
         ),
       });
@@ -120,76 +205,57 @@ export function RecruiterInsights() {
           <>
             Visitors spend the most time on{' '}
             <strong>{formatSectionName(sectionsByTime[0][0])}</strong> with{' '}
-            <strong>{formatDuration(sectionsByTime[0][1].total)}</strong> total
+            <strong>{formatDuration(sectionsByTime[0][1])}</strong> total
             engagement time.
           </>
         ),
       });
     }
 
-    // Project insights from events
+    /* ------------------------------------------------------------------ */
+    /* Event-driven interest insights                                     */
+    /* ------------------------------------------------------------------ */
+
     const projectCounts: Record<string, number> = {};
     const socialCounts: Record<string, number> = {};
-    const certCounts: Record<string, number> = {};
+    const certInteractionCounts: Record<string, number> = {};
+    const certNavCountsByName: Record<string, number> = {};
     const navCounts: Record<string, number> = {};
-
-    let totalCertNav = 0;
-    let resumeTotal = 0;
-    let contactTotal = 0;
 
     for (const event of events) {
       const props = safeParseJSON<Record<string, unknown>>(event.properties, {});
 
       if (event.event_name === EVENT_PROJECT_CLICK) {
-        const projectName =
-          typeof props.project_name === 'string' ? props.project_name : null;
-        increment(projectCounts, projectName);
+        increment(projectCounts, normalizeProjectName(props.project_name));
       }
 
       if (event.event_name === EVENT_SOCIAL_CLICK) {
-        const platform =
-          typeof props.platform === 'string'
-            ? capitalize(props.platform)
-            : null;
-        increment(socialCounts, platform);
+        increment(socialCounts, normalizeSocialPlatform(props.platform));
       }
 
       if (event.event_name === EVENT_CERT_CLICK) {
-        const certName =
-          typeof props.cert_name === 'string' ? props.cert_name : null;
-        increment(certCounts, certName);
+        increment(certInteractionCounts, normalizeCertName(props.cert_name));
       }
 
       if (event.event_name === EVENT_CERT_NAV_CLICK) {
-        totalCertNav += 1;
-
-        const certName =
-          typeof props.cert_name === 'string' ? props.cert_name : null;
-        increment(certCounts, certName);
+        const certName = normalizeCertName(props.cert_name);
+        increment(certInteractionCounts, certName);
+        increment(certNavCountsByName, certName);
       }
 
       if (event.event_name === EVENT_NAV_CLICK) {
         const target =
-          typeof props.target === 'string'
-            ? props.target
-            : typeof props.label === 'string'
-            ? props.label
-            : null;
+          normalizeNavTarget(props.target) ||
+          normalizeNavTarget(props.label) ||
+          normalizeNavTarget(event.section);
+
         increment(navCounts, target);
-      }
-
-      if (event.event_name === EVENT_RESUME_DOWNLOAD) {
-        resumeTotal += 1;
-      }
-
-      if (event.event_name === EVENT_CONTACT_SUCCESS) {
-        contactTotal += 1;
       }
     }
 
     const topProject = sortCountEntries(projectCounts)[0];
     const topSocial = sortCountEntries(socialCounts)[0];
-    const topCert = sortCountEntries(certCounts)[0];
+    const topCert = sortCountEntries(certInteractionCounts)[0];
     const topNav = sortCountEntries(navCounts)[0];
 
     if (topProject) {
@@ -199,8 +265,9 @@ export function RecruiterInsights() {
         text: (
           <>
             <strong>{topProject[0]}</strong> is the most interesting project with{' '}
-            <strong>{topProject[1]}</strong> click{topProject[1] > 1 ? 's' : ''},
-            indicating the strongest project-level recruiter interest.
+            <strong>{topProject[1]}</strong> verified click
+            {topProject[1] > 1 ? 's' : ''}, indicating the strongest
+            project-level recruiter interest.
           </>
         ),
       });
@@ -221,15 +288,24 @@ export function RecruiterInsights() {
     }
 
     if (topCert) {
+      const topCertNavCount = certNavCountsByName[topCert[0]] || 0;
+
       lines.push({
         emoji: '🏅',
         category: 'Certifications',
         text: (
           <>
-            <strong>{topCert[0]}</strong> is the most interesting certification.
-            There were <strong>{totalCertNav}</strong> certification navigation
-            click{totalCertNav > 1 ? 's' : ''}, which suggests deeper exploration
-            of your credentials.
+            <strong>{topCert[0]}</strong> is the most interesting certification
+            with <strong>{topCert[1]}</strong> total certification interaction
+            {topCert[1] > 1 ? 's' : ''}.
+            {topCertNavCount > 0 && (
+              <>
+                {' '}
+                It also received <strong>{topCertNavCount}</strong> certification
+                navigation click{topCertNavCount > 1 ? 's' : ''}, suggesting
+                deeper credential exploration.
+              </>
+            )}
           </>
         ),
       });
@@ -249,16 +325,14 @@ export function RecruiterInsights() {
       });
     }
 
-    // Source / traffic insights
+    /* ------------------------------------------------------------------ */
+    /* Traffic source insights                                            */
+    /* ------------------------------------------------------------------ */
+
     const sourceCounts: Record<string, number> = {};
 
     for (const visitor of visitors) {
-      const source =
-        visitor.first_utm_source ||
-        visitor.referrer ||
-        'Direct';
-
-      increment(sourceCounts, source);
+      increment(sourceCounts, normalizeAcquisitionSource(visitor));
     }
 
     const topSource = sortCountEntries(sourceCounts)[0];
@@ -277,14 +351,27 @@ export function RecruiterInsights() {
       });
     }
 
-    // Conversion insights
+    /* ------------------------------------------------------------------ */
+    /* Conversion insights — use daily_metrics as source of truth         */
+    /* ------------------------------------------------------------------ */
+
+    const resumeTotal = dailyMetrics.reduce(
+      (sum, row) => sum + Number(row.resume_downloads || 0),
+      0
+    );
+
+    const contactTotal = dailyMetrics.reduce(
+      (sum, row) => sum + Number(row.contact_submits || 0),
+      0
+    );
+
     if (resumeTotal > 0) {
       lines.push({
         emoji: '📄',
         category: 'Conversions',
         text: (
           <>
-            <strong>{resumeTotal}</strong> resume download
+            <strong>{resumeTotal}</strong> verified resume download
             {resumeTotal > 1 ? 's' : ''} recorded — this is one of the strongest
             hiring-intent signals in the portfolio funnel.
           </>
@@ -298,7 +385,7 @@ export function RecruiterInsights() {
         category: 'Conversions',
         text: (
           <>
-            <strong>{contactTotal}</strong> contact form submission
+            <strong>{contactTotal}</strong> verified contact form submission
             {contactTotal > 1 ? 's' : ''} recorded — a clear indicator of direct
             recruiter or hiring-team interest.
           </>
@@ -306,7 +393,10 @@ export function RecruiterInsights() {
       });
     }
 
-    // Returning visitors
+    /* ------------------------------------------------------------------ */
+    /* Returning visitors                                                 */
+    /* ------------------------------------------------------------------ */
+
     const returning = visitors.filter((visitor) => visitor.total_sessions > 1).length;
 
     if (returning > 0) {
@@ -323,10 +413,11 @@ export function RecruiterInsights() {
       });
     }
 
-    // Engagement score from daily metrics
-    const latestMetric = dailyMetrics.length
-      ? dailyMetrics[dailyMetrics.length - 1]
-      : null;
+    /* ------------------------------------------------------------------ */
+    /* Latest metric insight                                              */
+    /* ------------------------------------------------------------------ */
+
+    const latestMetric = getLatestMetric(dailyMetrics);
 
     if (latestMetric) {
       const avgEngagement =
@@ -342,14 +433,17 @@ export function RecruiterInsights() {
           <>
             The latest average engagement score is{' '}
             <strong>{avgEngagement.toFixed(0)}/100</strong>, with{' '}
-            <strong>{totalConversions}</strong> conversion action
+            <strong>{totalConversions}</strong> converted session
             {totalConversions > 1 ? 's' : ''} recorded for that day.
           </>
         ),
       });
     }
 
-    // Audience geography
+    /* ------------------------------------------------------------------ */
+    /* Audience geography                                                 */
+    /* ------------------------------------------------------------------ */
+
     const countries = [...new Set(visitors.map((v) => v.country).filter(Boolean))];
 
     if (countries.length > 0) {

@@ -38,20 +38,29 @@ type SessionNavMeta = {
 
 const NAV_CLICK_EVENT = 'nav_click';
 
-function normalizeNavTarget(props: NavClickProps) {
-  const target =
-    typeof props.target === 'string' && props.target.trim()
-      ? props.target.trim()
-      : typeof props.label === 'string' && props.label.trim()
-      ? props.label.trim()
-      : 'Unknown';
+function normalizeText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
 
-  return target;
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeNavTarget(props: NavClickProps) {
+  const target = normalizeText(props.target);
+  if (target) return target.toLowerCase();
+
+  const label = normalizeText(props.label);
+  if (label) return label.toLowerCase();
+
+  return 'unknown';
 }
 
 function sortNavCounts(counts: Record<string, number>): NavRow[] {
   return Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return a[0].localeCompare(b[0]);
+    })
     .map(([rawName, value]) => ({
       rawName,
       name: formatSectionName(rawName),
@@ -62,6 +71,15 @@ function sortNavCounts(counts: Record<string, number>): NavRow[] {
 function safeTime(value: string | null | undefined) {
   const t = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
+}
+
+function toPercentWidth(value: number, total: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) {
+    return '0%';
+  }
+
+  const width = Math.max(0, Math.min(100, (value / total) * 100));
+  return `${width}%`;
 }
 
 export function NavigationAnalytics() {
@@ -84,13 +102,14 @@ export function NavigationAnalytics() {
 
       targetCounts[target] = (targetCounts[target] || 0) + 1;
 
-      if (!event.session_id) continue;
+      const sessionId = normalizeText(event.session_id);
+      if (!sessionId) continue;
 
       const createdAtMs = safeTime(event.created_at);
-      const existing = sessionMap.get(event.session_id);
+      const existing = sessionMap.get(sessionId);
 
       if (!existing) {
-        sessionMap.set(event.session_id, {
+        sessionMap.set(sessionId, {
           firstTarget: target,
           firstAt: createdAtMs,
           allTargets: new Set([target]),
@@ -329,7 +348,10 @@ export function NavigationAnalytics() {
                 <div
                   className="h-full rounded-full bg-primary"
                   style={{
-                    width: `${(derived.focusedSessions / derived.navSessions) * 100}%`,
+                    width: toPercentWidth(
+                      derived.focusedSessions,
+                      derived.navSessions
+                    ),
                   }}
                 />
               </div>
@@ -350,7 +372,10 @@ export function NavigationAnalytics() {
                 <div
                   className="h-full rounded-full bg-primary"
                   style={{
-                    width: `${(derived.multiTargetSessions / derived.navSessions) * 100}%`,
+                    width: toPercentWidth(
+                      derived.multiTargetSessions,
+                      derived.navSessions
+                    ),
                   }}
                 />
               </div>
