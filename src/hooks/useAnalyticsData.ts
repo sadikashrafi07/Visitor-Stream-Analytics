@@ -20,15 +20,39 @@ type QueryOptions = {
   missingTableFallback?: boolean;
 };
 
+type EventsRpcRow = {
+  event_id: string;
+  created_at: string;
+  event_name: string;
+  section: string | null;
+  page: string | null;
+  properties: Record<string, unknown> | null;
+  visitor_id: string;
+  session_id: string;
+};
+
 function isMissingRelationError(message: string | null | undefined) {
   if (!message) return false;
   const m = message.toLowerCase();
   return (
-    m.includes("could not find the table") ||
-    m.includes("schema cache") ||
-    m.includes("does not exist") ||
-    m.includes("relation") && m.includes("does not exist")
+    m.includes('could not find the table') ||
+    m.includes('schema cache') ||
+    m.includes('does not exist') ||
+    (m.includes('relation') && m.includes('does not exist'))
   );
+}
+
+function mapEventsRpcRowToAnalyticsEvent(row: EventsRpcRow): AnalyticsEvent {
+  return {
+    event_id: row.event_id,
+    created_at: row.created_at,
+    event_name: row.event_name,
+    section: row.section,
+    page: row.page,
+    properties: row.properties ?? {},
+    visitor_id: row.visitor_id,
+    session_id: row.session_id,
+  };
 }
 
 function useSupabaseQuery<T>(
@@ -120,6 +144,61 @@ function useSupabaseQuery<T>(
   };
 }
 
+function useEventsExplorerFeed(limit = 200) {
+  const [state, setState] = useState<QueryState<AnalyticsEvent>>({
+    data: [],
+    loading: true,
+    error: null,
+  });
+
+  const isMountedRef = useRef(true);
+
+  const fetch = useCallback(async () => {
+    setState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+    }));
+
+    const { data, error } = await supabase.rpc('get_events_explorer_feed', {
+      p_limit: limit,
+    });
+
+    if (!isMountedRef.current) return;
+
+    if (error) {
+      setState({
+        data: [],
+        loading: false,
+        error: error.message,
+      });
+      return;
+    }
+
+    const rows = Array.isArray(data) ? (data as EventsRpcRow[]) : [];
+
+    setState({
+      data: rows.map(mapEventsRpcRowToAnalyticsEvent),
+      loading: false,
+      error: null,
+    });
+  }, [limit]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    void fetch();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [fetch]);
+
+  return {
+    ...state,
+    refetch: fetch,
+  };
+}
+
 export function useVisitors() {
   return useSupabaseQuery<Visitor>('visitors', 'created_at', false);
 }
@@ -154,7 +233,7 @@ export function useSectionEngagement() {
 }
 
 export function useEvents() {
-  return useSupabaseQuery<AnalyticsEvent>('events', 'created_at', false);
+  return useEventsExplorerFeed(300);
 }
 
 export function useDailyMetrics() {

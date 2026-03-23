@@ -7,7 +7,6 @@ import {
 } from './ChartContainer';
 import { useEvents } from '@/hooks/useAnalyticsData';
 import {
-  safeParseJSON,
   formatEventName,
   formatSectionName,
   timeAgo,
@@ -37,7 +36,11 @@ export function EventExplorer() {
   );
 
   const sections = useMemo(() => {
-    return [...new Set(events.map((e) => normalizeText(e.section)).filter(isNonEmptyString))].sort();
+    return [
+      ...new Set(
+        events.map((e) => normalizeText(e.section)).filter(isNonEmptyString)
+      ),
+    ].sort();
   }, [events]);
 
   const filtered = useMemo(() => {
@@ -57,24 +60,23 @@ export function EventExplorer() {
       const q = search.trim().toLowerCase();
 
       result = result.filter((e) => {
-        const props = safeParseJSON<Record<string, unknown>>(e.properties, {});
-        const details = extractDetails(e, props).toLowerCase();
-        const propertiesText =
-          typeof e.properties === 'string'
-            ? e.properties.toLowerCase()
-            : safeSerialize(props).toLowerCase();
+        const props = getEventProperties(e);
 
-        const sectionText = normalizeText(e.section) ?? '';
-        const pageText = normalizeText((e as AnalyticsEvent & { page?: string | null }).page) ?? '';
-        const visitorText = normalizeText(e.visitor_id) ?? '';
-        const sessionText = normalizeText(e.session_id) ?? '';
+        const details = extractDetails(e, props).toLowerCase();
+        const propertiesText = safeSerialize(props).toLowerCase();
+
+        const eventText = normalizeText(e.event_name)?.toLowerCase() ?? '';
+        const sectionText = normalizeText(e.section)?.toLowerCase() ?? '';
+        const pageText = normalizeText(e.page)?.toLowerCase() ?? '';
+        const visitorText = normalizeText(e.visitor_id)?.toLowerCase() ?? '';
+        const sessionText = normalizeText(e.session_id)?.toLowerCase() ?? '';
 
         return (
-          e.event_name.toLowerCase().includes(q) ||
-          visitorText.toLowerCase().includes(q) ||
-          sessionText.toLowerCase().includes(q) ||
-          sectionText.toLowerCase().includes(q) ||
-          pageText.toLowerCase().includes(q) ||
+          eventText.includes(q) ||
+          visitorText.includes(q) ||
+          sessionText.includes(q) ||
+          sectionText.includes(q) ||
+          pageText.includes(q) ||
           details.includes(q) ||
           propertiesText.includes(q)
         );
@@ -147,10 +149,7 @@ export function EventExplorer() {
               </thead>
               <tbody>
                 {filtered.map((event) => {
-                  const props = safeParseJSON<Record<string, unknown>>(
-                    event.properties,
-                    {}
-                  );
+                  const props = getEventProperties(event);
                   const details = extractDetails(event, props);
 
                   return (
@@ -159,7 +158,9 @@ export function EventExplorer() {
                       className="border-b border-border/50 transition-colors hover:bg-muted/30"
                     >
                       <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
-                        {safeTime(event.created_at) === 0 ? '—' : timeAgo(event.created_at)}
+                        {safeTime(event.created_at) === 0
+                          ? '—'
+                          : timeAgo(event.created_at)}
                       </td>
 
                       <td className="px-3 py-2">
@@ -194,8 +195,8 @@ export function EventExplorer() {
           </div>
 
           <p className="mt-3 text-xs text-muted-foreground">
-            Showing {filtered.length} of {events.length} events (maximum {MAX_ROWS}{' '}
-            rows rendered for performance).
+            Showing {filtered.length} of {events.length} events (maximum{' '}
+            {MAX_ROWS} rows rendered for performance).
           </p>
         </>
       )}
@@ -224,9 +225,20 @@ function shortId(value: string | null | undefined) {
   return value.length > 8 ? `${value.slice(0, 8)}…` : value;
 }
 
+function getEventProperties(
+  event: AnalyticsEvent
+): Record<string, unknown> {
+  if (event.properties && typeof event.properties === 'object') {
+    return event.properties as Record<string, unknown>;
+  }
+
+  return {};
+}
+
 function safeValueToString(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
+
   if (
     typeof value === 'number' ||
     typeof value === 'boolean' ||
@@ -340,6 +352,25 @@ function extractDetails(
         ? `Section: ${safeValueToString(props.section)}`
         : 'Section view started';
 
+    case 'session_start':
+      return props.entry_page
+        ? `entry_page: ${safeValueToString(props.entry_page)}`
+        : 'Session started';
+
+    case 'session_end':
+      return joinParts([
+        props.exit_page ? `exit_page: ${safeValueToString(props.exit_page)}` : null,
+        props.is_bounce !== undefined
+          ? `is_bounce: ${safeValueToString(props.is_bounce)}`
+          : null,
+        props.duration_seconds !== undefined
+          ? `duration_seconds: ${safeValueToString(props.duration_seconds)}`
+          : null,
+        props.max_scroll_depth !== undefined
+          ? `max_scroll_depth: ${safeValueToString(props.max_scroll_depth)}`
+          : null,
+      ]);
+
     default: {
       const visibleEntries = Object.entries(props)
         .filter(([key]) => !key.startsWith('_'))
@@ -352,5 +383,7 @@ function extractDetails(
 }
 
 function joinParts(parts: Array<string | null | undefined>) {
-  return parts.filter((part): part is string => Boolean(part && part.trim())).join(' ');
+  return parts
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join(' ');
 }

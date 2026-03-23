@@ -92,9 +92,9 @@ export interface AnalyticsEvent {
   visitor_id: string;
   session_id: string;
   event_name: string;
-  page: string;
-  section: NullableString;
-  properties: string;
+  page: string | null;
+  section: string | null;
+  properties: Record<string, unknown> | null;
   created_at: string;
 }
 
