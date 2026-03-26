@@ -51,10 +51,8 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function isFinalizedSession(session: {
-  session_end?: string | null;
-}) {
-  return Boolean(session.session_end);
+function hasTrackedSessionId(session: { session_id?: string | null }) {
+  return Boolean(typeof session.session_id === 'string' && session.session_id.trim());
 }
 
 export function SectionAnalytics() {
@@ -62,19 +60,19 @@ export function SectionAnalytics() {
     data: sectionEngagement,
     loading: sectionLoading,
     error: sectionError,
-  } = useSectionEngagement();
+  } = useSectionEngagement(false, true);
 
   const {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
-  } = useSessions();
+  } = useSessions(false, true);
 
-  const finalizedSessionIds = useMemo(() => {
+  const validSessionIds = useMemo(() => {
     return new Set(
       sessions
-        .filter((session) => isFinalizedSession(session))
-        .map((session) => session.session_id)
+        .filter((session) => hasTrackedSessionId(session))
+        .map((session) => session.session_id as string)
     );
   }, [sessions]);
 
@@ -89,14 +87,17 @@ export function SectionAnalytics() {
 
     for (const row of sectionEngagement) {
       const sessionId =
-        typeof row.session_id === 'string' ? row.session_id : '';
+        typeof row.session_id === 'string' ? row.session_id.trim() : '';
 
-      if (!sessionId || !finalizedSessionIds.has(sessionId)) continue;
+      if (!sessionId || (validSessionIds.size > 0 && !validSessionIds.has(sessionId))) {
+        continue;
+      }
 
       const rawName = normalizeSectionName(row.section_name);
       if (!rawName) continue;
 
       const seconds = normalizeSeconds(row.time_spent_seconds);
+
       if (!map.has(rawName)) {
         map.set(rawName, {
           totalTime: 0,
@@ -127,6 +128,7 @@ export function SectionAnalytics() {
       1,
       ...baseStats.map((section) => section.totalTime)
     );
+
     const maxViewCount = Math.max(
       1,
       ...baseStats.map((section) => section.viewCount)
@@ -152,7 +154,7 @@ export function SectionAnalytics() {
         if (b.viewCount !== a.viewCount) return b.viewCount - a.viewCount;
         return a.name.localeCompare(b.name);
       });
-  }, [sectionEngagement, finalizedSessionIds]);
+  }, [sectionEngagement, validSessionIds]);
 
   const totalTimeData = useMemo<ChartRow[]>(
     () =>
@@ -241,7 +243,7 @@ export function SectionAnalytics() {
 
       <ChartContainer
         title="Average Time per View"
-        subtitle="Average engagement depth for each finalized section visit"
+        subtitle="Average engagement depth for each tracked section visit"
       >
         {avgTimeData.length === 0 ? (
           <EmptyState message="No average time data available yet" />
@@ -282,7 +284,7 @@ export function SectionAnalytics() {
 
       <ChartContainer
         title="Most Viewed Sections"
-        subtitle="Sections with the highest number of unique finalized session visits"
+        subtitle="Sections with the highest number of unique tracked session visits"
       >
         {viewCountData.length === 0 ? (
           <EmptyState message="No section view counts available yet" />

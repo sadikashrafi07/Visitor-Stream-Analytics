@@ -27,6 +27,7 @@ type NavClickProps = {
   target?: string;
   label?: string;
   location?: string;
+  section?: string;
 };
 
 type SessionNavMeta = {
@@ -37,6 +38,7 @@ type SessionNavMeta = {
 };
 
 const NAV_CLICK_EVENT = 'nav_click';
+const EVENTS_FETCH_LIMIT = 1000;
 
 function normalizeText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -45,12 +47,21 @@ function normalizeText(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeNavTarget(props: NavClickProps) {
+function normalizeNavTarget(
+  props: NavClickProps,
+  eventSection?: string | null
+): string {
   const target = normalizeText(props.target);
   if (target) return target.toLowerCase();
 
   const label = normalizeText(props.label);
   if (label) return label.toLowerCase();
+
+  const section = normalizeText(props.section);
+  if (section) return section.toLowerCase();
+
+  const fallbackSection = normalizeText(eventSection);
+  if (fallbackSection) return fallbackSection.toLowerCase();
 
   return 'unknown';
 }
@@ -68,12 +79,12 @@ function sortNavCounts(counts: Record<string, number>): NavRow[] {
     }));
 }
 
-function safeTime(value: string | null | undefined) {
+function safeTime(value: string | null | undefined): number {
   const t = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
 }
 
-function toPercentWidth(value: number, total: number) {
+function toPercentWidth(value: number, total: number): string {
   if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) {
     return '0%';
   }
@@ -83,7 +94,17 @@ function toPercentWidth(value: number, total: number) {
 }
 
 export function NavigationAnalytics() {
-  const { data: events, loading, error } = useEvents();
+  const {
+    data: events,
+    loading,
+    error,
+  } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: EVENTS_FETCH_LIMIT,
+    sessionId: null,
+    since: null,
+  });
 
   const derived = useMemo(() => {
     const targetCounts: Record<string, number> = {};
@@ -95,11 +116,10 @@ export function NavigationAnalytics() {
     for (const event of events) {
       if (event.event_name !== NAV_CLICK_EVENT) continue;
 
-      totalNavClicks += 1;
-
       const props = safeParseJSON<NavClickProps>(event.properties, {});
-      const target = normalizeNavTarget(props);
+      const target = normalizeNavTarget(props, event.section);
 
+      totalNavClicks += 1;
       targetCounts[target] = (targetCounts[target] || 0) + 1;
 
       const sessionId = normalizeText(event.session_id);

@@ -1,4 +1,5 @@
 export type NullableString = string | null;
+export type NumericLike = number | string;
 
 export type BounceFilter = 'all' | 'bounce' | 'non-bounce';
 export type ConversionFilter = 'all' | 'yes' | 'no';
@@ -7,6 +8,14 @@ export interface DateRange {
   from: Date | null;
   to: Date | null;
 }
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue =
+  | JsonPrimitive
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type JsonObject = Record<string, JsonValue>;
 
 export interface Visitor {
   visitor_id: string;
@@ -32,10 +41,10 @@ export interface Session {
   session_start: string;
   session_end: NullableString;
   duration_seconds: number;
-  entry_page: string;
-  exit_page: string;
+  entry_page: NullableString;
+  exit_page: NullableString;
   is_bounce: boolean;
-  landing_page: string;
+  landing_page: NullableString;
   utm_source: NullableString;
   utm_medium: NullableString;
   utm_campaign: NullableString;
@@ -44,19 +53,12 @@ export interface Session {
   created_at: string;
 }
 
-/**
- * Optional / future model only.
- * This is kept for compatibility in case a real `session_analytics`
- * table or view is added later.
- *
- * It is NOT currently backed by an existing Supabase relation.
- */
 export interface SessionAnalytics {
   session_id: string;
   visitor_id: string;
   duration_seconds: number;
   max_scroll_depth: number;
-  sections_visited: string;
+  sections_visited: JsonValue[] | string;
   project_clicks: number;
   github_clicks: number;
   cert_clicks: number;
@@ -64,10 +66,10 @@ export interface SessionAnalytics {
   resume_downloads: number;
   contact_submits: number;
   nav_clicks: number;
-  project_clicks_by_name: string;
-  social_clicks_by_platform: string;
-  cert_clicks_by_name: string;
-  cert_clicks_by_issuer: string;
+  project_clicks_by_name: JsonObject | string;
+  social_clicks_by_platform: JsonObject | string;
+  cert_clicks_by_name: JsonObject | string;
+  cert_clicks_by_issuer: JsonObject | string;
   sections_count: number;
   total_section_time: number;
   has_conversion: boolean;
@@ -75,6 +77,7 @@ export interface SessionAnalytics {
   conversion_contact: boolean;
   engagement_score: number;
   cert_nav_clicks: number;
+  is_engaged_session: boolean;
   created_at: string;
 }
 
@@ -92,9 +95,9 @@ export interface AnalyticsEvent {
   visitor_id: string;
   session_id: string;
   event_name: string;
-  page: string | null;
-  section: string | null;
-  properties: Record<string, unknown> | null;
+  page: NullableString;
+  section: NullableString;
+  properties: JsonObject;
   created_at: string;
 }
 
@@ -102,8 +105,8 @@ export interface DailyMetric {
   metric_date: string;
   total_visitors: number;
   total_sessions: number;
-  avg_session_duration: string;
-  bounce_rate: string;
+  avg_session_duration: NumericLike;
+  bounce_rate: NumericLike;
   github_clicks: number;
   project_clicks: number;
   cert_clicks: number;
@@ -113,9 +116,18 @@ export interface DailyMetric {
   total_conversions: number;
   resume_conversions: number;
   contact_conversions: number;
-  avg_engagement_score: string;
+  avg_engagement_score: NumericLike;
   cert_nav_clicks: number;
-  created_at: string;
+  engaged_sessions: number;
+  engaged_session_rate: NumericLike;
+  refreshed_at: string;
+
+  /**
+   * Backward-compatibility only.
+   * The database now uses `refreshed_at`.
+   * Keep this optional so older frontend code does not break immediately.
+   */
+  created_at?: string;
 }
 
 export interface FilterState {

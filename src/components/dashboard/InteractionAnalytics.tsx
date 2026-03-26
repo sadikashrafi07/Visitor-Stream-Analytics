@@ -23,9 +23,12 @@ type CountRow = {
 };
 
 const EVENT_PROJECT_CLICK = 'project_card_click';
+const EVENT_PROJECT_CLICK_ALT = 'project_click';
 const EVENT_SOCIAL_CLICK = 'social_click';
 const EVENT_CERT_CLICK = 'cert_card_click';
+const EVENT_CERT_CLICK_ALT = 'cert_click';
 const EVENT_CERT_NAV_CLICK = 'cert_nav_click';
+const EVENTS_FETCH_LIMIT = 1000;
 
 function normalizeText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -94,7 +97,13 @@ function getNormalizedIssuer(props: Record<string, unknown>) {
 }
 
 export function ProjectAnalytics() {
-  const { data: events, loading, error } = useEvents();
+  const { data: events, loading, error } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: EVENTS_FETCH_LIMIT,
+    sessionId: null,
+    since: null,
+  });
 
   const derived = useMemo(() => {
     const projectCounts: Record<string, number> = {};
@@ -104,7 +113,12 @@ export function ProjectAnalytics() {
     let totalProjectClicks = 0;
 
     for (const event of events) {
-      if (event.event_name !== EVENT_PROJECT_CLICK) continue;
+      if (
+        event.event_name !== EVENT_PROJECT_CLICK &&
+        event.event_name !== EVENT_PROJECT_CLICK_ALT
+      ) {
+        continue;
+      }
 
       const props = getEventProps(event);
       const projectName = getNormalizedProjectName(props);
@@ -342,7 +356,13 @@ export function ProjectAnalytics() {
 }
 
 export function SocialAnalytics() {
-  const { data: events, loading, error } = useEvents();
+  const { data: events, loading, error } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: EVENTS_FETCH_LIMIT,
+    sessionId: null,
+    since: null,
+  });
 
   const derived = useMemo(() => {
     const socialCounts: Record<string, number> = {};
@@ -438,7 +458,13 @@ export function SocialAnalytics() {
 }
 
 export function CertificationAnalytics() {
-  const { data: events, loading, error } = useEvents();
+  const { data: events, loading, error } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: EVENTS_FETCH_LIMIT,
+    sessionId: null,
+    since: null,
+  });
 
   const derived = useMemo(() => {
     const certClickCounts: Record<string, number> = {};
@@ -449,7 +475,10 @@ export function CertificationAnalytics() {
     let totalCertNavClicks = 0;
 
     for (const event of events) {
-      if (event.event_name === EVENT_CERT_CLICK) {
+      if (
+        event.event_name === EVENT_CERT_CLICK ||
+        event.event_name === EVENT_CERT_CLICK_ALT
+      ) {
         const props = getEventProps(event);
         const certName = getNormalizedCertName(props);
         const issuer = getNormalizedIssuer(props);
@@ -461,6 +490,14 @@ export function CertificationAnalytics() {
 
       if (event.event_name === EVENT_CERT_NAV_CLICK) {
         totalCertNavClicks += 1;
+
+        const props = getEventProps(event);
+        const certName = getNormalizedCertName(props);
+        const issuer = getNormalizedIssuer(props);
+
+        // include cert nav as browsing interest signal for the certificate entity
+        increment(certClickCounts, certName);
+        increment(issuerClickCounts, issuer);
 
         const sessionId = normalizeText(event.session_id);
         if (sessionId) {
@@ -481,7 +518,8 @@ export function CertificationAnalytics() {
       .sort((a, b) => {
         if (b.value !== a.value) return b.value - a.value;
         return a.name.localeCompare(b.name);
-      });
+      })
+      .slice(0, 10);
 
     const browsingSessions = browsingSessionData.length;
     const avgNavClicksPerBrowsingSession =

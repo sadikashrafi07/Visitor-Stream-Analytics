@@ -17,6 +17,7 @@ import {
 import {
   useDailyMetrics,
   useSessions,
+  useSessionAnalytics,
 } from '@/hooks/useAnalyticsData';
 import {
   formatShortDate,
@@ -29,6 +30,7 @@ type ConversionTrendRow = {
   resumeDownloads: number;
   contactSubmits: number;
   totalConversionActions: number;
+  metricDate: string;
 };
 
 function toSafeNumber(value: unknown, fallback = 0): number {
@@ -47,7 +49,13 @@ export function ConversionAnalytics() {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
-  } = useSessions();
+  } = useSessions(false, true);
+
+  const {
+    data: sessionAnalytics,
+    loading: sessionAnalyticsLoading,
+    error: sessionAnalyticsError,
+  } = useSessionAnalytics(false, true);
 
   const derived = useMemo(() => {
     const resumeTotal = metrics.reduce(
@@ -62,26 +70,38 @@ export function ConversionAnalytics() {
 
     const totalConversionActions = resumeTotal + contactTotal;
 
+    const endedSessions = sessions.filter((session) => Boolean(session.session_end));
+    const endedSessionCount = endedSessions.length;
+
+    const conversionSessionsFromSessionSummary =
+      sessionAnalytics.length > 0
+        ? sessionAnalytics.filter((row) => Boolean(row.has_conversion)).length
+        : 0;
+
     const conversionSessionsFromMetrics = metrics.reduce(
       (sum, metric) => sum + toSafeNumber(metric.total_conversions),
       0
     );
+
+    const totalSessionsFromSessionSummary =
+      sessionAnalytics.length > 0 ? sessionAnalytics.length : 0;
 
     const totalSessionsFromMetrics = metrics.reduce(
       (sum, metric) => sum + toSafeNumber(metric.total_sessions),
       0
     );
 
-    const endedSessionsFallback = sessions.filter(
-      (session) => Boolean(session.session_end)
-    ).length;
-
     const totalSessions =
-      totalSessionsFromMetrics > 0
-        ? totalSessionsFromMetrics
-        : endedSessionsFallback;
+      totalSessionsFromSessionSummary > 0
+        ? totalSessionsFromSessionSummary
+        : totalSessionsFromMetrics > 0
+          ? totalSessionsFromMetrics
+          : endedSessionCount;
 
-    const conversionSessions = conversionSessionsFromMetrics;
+    const conversionSessions =
+      conversionSessionsFromSessionSummary > 0
+        ? conversionSessionsFromSessionSummary
+        : conversionSessionsFromMetrics;
 
     const conversionRate =
       totalSessions > 0 ? (conversionSessions / totalSessions) * 100 : 0;
@@ -101,17 +121,20 @@ export function ConversionAnalytics() {
         ? (contactTotal / totalConversionActions) * 100
         : 0;
 
-    const trendData: ConversionTrendRow[] = metrics.map((metric) => {
-      const resumeDownloads = toSafeNumber(metric.resume_downloads);
-      const contactSubmits = toSafeNumber(metric.contact_submits);
+    const trendData: ConversionTrendRow[] = [...metrics]
+      .map((metric) => {
+        const resumeDownloads = toSafeNumber(metric.resume_downloads);
+        const contactSubmits = toSafeNumber(metric.contact_submits);
 
-      return {
-        date: formatShortDate(metric.metric_date),
-        resumeDownloads,
-        contactSubmits,
-        totalConversionActions: resumeDownloads + contactSubmits,
-      };
-    });
+        return {
+          date: formatShortDate(metric.metric_date),
+          metricDate: metric.metric_date,
+          resumeDownloads,
+          contactSubmits,
+          totalConversionActions: resumeDownloads + contactSubmits,
+        };
+      })
+      .sort((a, b) => a.metricDate.localeCompare(b.metricDate));
 
     return {
       resumeTotal,
@@ -125,10 +148,10 @@ export function ConversionAnalytics() {
       contactShare,
       trendData,
     };
-  }, [metrics, sessions]);
+  }, [metrics, sessions, sessionAnalytics]);
 
-  const isLoading = metricsLoading || sessionsLoading;
-  const error = metricsError || sessionsError || null;
+  const isLoading = metricsLoading || sessionsLoading || sessionAnalyticsLoading;
+  const error = metricsError || sessionsError || sessionAnalyticsError || null;
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
@@ -180,7 +203,7 @@ export function ConversionAnalytics() {
             {formatPercent(derived.conversionRate)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Converted sessions / total sessions
+            Converted sessions / total tracked sessions
           </p>
         </div>
       </div>

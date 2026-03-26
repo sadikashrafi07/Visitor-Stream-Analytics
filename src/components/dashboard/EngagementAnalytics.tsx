@@ -19,13 +19,11 @@ import {
 import {
   useDailyMetrics,
   useSessions,
-  useEvents,
-  useSectionEngagement,
+  useSessionAnalytics,
 } from '@/hooks/useAnalyticsData';
 import {
   formatShortDate,
   formatDuration,
-  safeParseJSON,
 } from '@/lib/analytics-utils';
 
 type SessionDerivedStats = {
@@ -43,14 +41,6 @@ type SessionDerivedStats = {
   quality_label: 'High Intent' | 'Engaged' | 'Passive';
 };
 
-type ScrollDepthProps = {
-  depth?: number;
-};
-
-const RESUME_EVENT = 'resume_download';
-const CONTACT_SUCCESS_EVENT = 'contact_submit_success';
-const SCROLL_DEPTH_EVENT = 'scroll_depth';
-
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -66,65 +56,14 @@ function normalizeDurationSeconds(value: unknown) {
 
 function isSessionFinalized(session: {
   session_end?: string | null;
-  duration_seconds?: number | null;
 }) {
   return Boolean(session.session_end);
 }
 
-function getSessionQuality(
-  durationSeconds: number,
-  maxScrollDepth: number,
-  uniqueSectionsCount: number,
-  totalSectionTimeSeconds: number,
-  hasResumeConversion: boolean,
-  hasContactConversion: boolean,
-  isBounce: boolean
-): Pick<SessionDerivedStats, 'quality_score' | 'quality_label'> {
-  let score = 0;
-
-  const safeDuration = clamp(durationSeconds, 0, 7200);
-  const safeScroll = clamp(maxScrollDepth, 0, 100);
-  const safeUniqueSections = clamp(uniqueSectionsCount, 0, 20);
-
-  // Section time should not dominate beyond the session duration itself.
-  const boundedSectionTime = clamp(
-    Math.min(totalSectionTimeSeconds, safeDuration),
-    0,
-    7200
-  );
-
-  if (hasResumeConversion) score += 35;
-  if (hasContactConversion) score += 35;
-
-  score += clamp(safeDuration / 20, 0, 20);
-  score += clamp(safeScroll / 10, 0, 10);
-  score += clamp(safeUniqueSections * 4, 0, 20);
-  score += clamp(boundedSectionTime / 6, 0, 20);
-
-  if (isBounce) score -= 10;
-
-  const looksPassive =
-    safeDuration >= 300 &&
-    safeScroll === 0 &&
-    safeUniqueSections === 0 &&
-    boundedSectionTime === 0 &&
-    !hasResumeConversion &&
-    !hasContactConversion;
-
-  if (looksPassive) {
-    score = Math.min(score, 8);
-  }
-
-  const normalized = clamp(Math.round(score), 0, 100);
-
-  let qualityLabel: SessionDerivedStats['quality_label'] = 'Passive';
-  if (normalized >= 65) qualityLabel = 'High Intent';
-  else if (normalized >= 25) qualityLabel = 'Engaged';
-
-  return {
-    quality_score: normalized,
-    quality_label: qualityLabel,
-  };
+function getQualityLabel(score: number): SessionDerivedStats['quality_label'] {
+  if (score >= 65) return 'High Intent';
+  if (score >= 25) return 'Engaged';
+  return 'Passive';
 }
 
 export function EngagementAnalytics() {
@@ -138,133 +77,97 @@ export function EngagementAnalytics() {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
-  } = useSessions();
+  } = useSessions(false, true);
 
   const {
-    data: events,
-    loading: eventsLoading,
-    error: eventsError,
-  } = useEvents();
-
-  const {
-    data: sectionEngagement,
-    loading: sectionLoading,
-    error: sectionError,
-  } = useSectionEngagement();
+    data: sessionAnalytics,
+    loading: sessionAnalyticsLoading,
+    error: sessionAnalyticsError,
+  } = useSessionAnalytics(false, true);
 
   const trendData = useMemo(
     () =>
-      metrics.map((metric) => ({
-        date: formatShortDate(metric.metric_date),
-        duration: toSafeNumber(metric.avg_session_duration, 0),
-        bounceRate: toSafeNumber(metric.bounce_rate, 0) * 100,
-        engagement: toSafeNumber(metric.avg_engagement_score, 0),
-      })),
+      [...metrics]
+        .map((metric) => ({
+          date: formatShortDate(metric.metric_date),
+          metricDate: metric.metric_date,
+          duration: toSafeNumber(metric.avg_session_duration, 0),
+          bounceRate: toSafeNumber(metric.bounce_rate, 0) * 100,
+          engagement: toSafeNumber(metric.avg_engagement_score, 0),
+        }))
+        .sort((a, b) => a.metricDate.localeCompare(b.metricDate)),
     [metrics]
   );
 
-  const finalizedSessions = useMemo(
-    () => sessions.filter((session) => isSessionFinalized(session)),
-    [sessions]
-  );
-
-  const finalizedSessionIds = useMemo(
-    () => new Set(finalizedSessions.map((session) => session.session_id)),
-    [finalizedSessions]
-  );
+  const sessionMap = useMemo(() => {
+    return new Map(
+      sessions.map((session) => [session.session_id, session] as const)
+    );
+  }, [sessions]);
 
   const sessionDerivedStats = useMemo<SessionDerivedStats[]>(() => {
-    const scrollBySession = new Map<string, number>();
-    const uniqueSectionsBySession = new Map<string, Set<string>>();
-    const totalSectionTimeBySession = new Map<string, number>();
-    const resumeBySession = new Set<string>();
-    const contactBySession = new Set<string>();
+    return sessionAnalytics
+      .map((summary) => {
+        const session = sessionMap.get(summary.session_id);
 
-    for (const event of events) {
-      if (!event.session_id || !finalizedSessionIds.has(event.session_id)) {
-        continue;
-      }
-
-      if (event.event_name === SCROLL_DEPTH_EVENT) {
-        const props = safeParseJSON<ScrollDepthProps>(event.properties, {});
-        const depth = toSafeNumber(props.depth, 0);
-        const normalizedDepth = clamp(Math.floor(depth), 0, 100);
-        const currentDepth = scrollBySession.get(event.session_id) ?? 0;
-
-        scrollBySession.set(
-          event.session_id,
-          Math.max(currentDepth, normalizedDepth)
+        const durationSeconds = normalizeDurationSeconds(
+          session?.duration_seconds ?? summary.duration_seconds
         );
-      }
 
-      if (event.event_name === RESUME_EVENT) {
-        resumeBySession.add(event.session_id);
-      }
+        const isBounce = Boolean(session?.is_bounce);
 
-      if (event.event_name === CONTACT_SUCCESS_EVENT) {
-        contactBySession.add(event.session_id);
-      }
-    }
+        const maxScrollDepth = clamp(
+          Math.floor(toSafeNumber(summary.max_scroll_depth, 0)),
+          0,
+          100
+        );
 
-    for (const row of sectionEngagement) {
-      if (!row.session_id || !finalizedSessionIds.has(row.session_id)) continue;
+        const uniqueSectionsCount = Math.max(
+          0,
+          Math.floor(toSafeNumber(summary.sections_count, 0))
+        );
 
-      const sectionName =
-        typeof row.section_name === 'string' ? row.section_name.trim() : '';
+        const totalSectionTimeSeconds = Math.max(
+          0,
+          Math.floor(toSafeNumber(summary.total_section_time, 0))
+        );
 
-      if (!sectionName) continue;
+        const conversionResume = Boolean(summary.conversion_resume);
+        const conversionContact = Boolean(summary.conversion_contact);
+        const hasConversion = Boolean(summary.has_conversion);
 
-      if (!uniqueSectionsBySession.has(row.session_id)) {
-        uniqueSectionsBySession.set(row.session_id, new Set<string>());
-      }
+        const qualityScore = clamp(
+          Math.round(toSafeNumber(summary.engagement_score, 0)),
+          0,
+          100
+        );
 
-      uniqueSectionsBySession.get(row.session_id)?.add(sectionName);
+        return {
+          session_id: summary.session_id,
+          visitor_id: session?.visitor_id ?? summary.visitor_id,
+          duration_seconds: durationSeconds,
+          is_bounce: isBounce,
+          max_scroll_depth: maxScrollDepth,
+          unique_sections_count: uniqueSectionsCount,
+          total_section_time_seconds: totalSectionTimeSeconds,
+          conversion_resume: conversionResume,
+          conversion_contact: conversionContact,
+          has_conversion: hasConversion,
+          quality_score: qualityScore,
+          quality_label: getQualityLabel(qualityScore),
+        };
+      })
+      .filter((row) => Boolean(row.session_id) && Boolean(row.visitor_id));
+  }, [sessionAnalytics, sessionMap]);
 
-      totalSectionTimeBySession.set(
-        row.session_id,
-        (totalSectionTimeBySession.get(row.session_id) ?? 0) +
-          Math.max(0, Math.floor(toSafeNumber(row.time_spent_seconds, 0)))
-      );
-    }
-
-    return finalizedSessions.map((session) => {
-      const durationSeconds = normalizeDurationSeconds(session.duration_seconds);
-      const maxScrollDepth = scrollBySession.get(session.session_id) ?? 0;
-      const uniqueSectionsCount =
-        uniqueSectionsBySession.get(session.session_id)?.size ?? 0;
-      const totalSectionTimeSeconds =
-        totalSectionTimeBySession.get(session.session_id) ?? 0;
-
-      const conversionResume = resumeBySession.has(session.session_id);
-      const conversionContact = contactBySession.has(session.session_id);
-      const hasConversion = conversionResume || conversionContact;
-
-      const quality = getSessionQuality(
-        durationSeconds,
-        maxScrollDepth,
-        uniqueSectionsCount,
-        totalSectionTimeSeconds,
-        conversionResume,
-        conversionContact,
-        Boolean(session.is_bounce)
-      );
-
-      return {
-        session_id: session.session_id,
-        visitor_id: session.visitor_id,
-        duration_seconds: durationSeconds,
-        is_bounce: Boolean(session.is_bounce),
-        max_scroll_depth: maxScrollDepth,
-        unique_sections_count: uniqueSectionsCount,
-        total_section_time_seconds: totalSectionTimeSeconds,
-        conversion_resume: conversionResume,
-        conversion_contact: conversionContact,
-        has_conversion: hasConversion,
-        quality_score: quality.quality_score,
-        quality_label: quality.quality_label,
-      };
-    });
-  }, [finalizedSessions, finalizedSessionIds, events, sectionEngagement]);
+  const finalizedSessionStats = useMemo(
+    () =>
+      sessionDerivedStats.filter((row) => {
+        const session = sessionMap.get(row.session_id);
+        return session ? isSessionFinalized(session) : false;
+      }),
+    [sessionDerivedStats, sessionMap]
+  );
 
   const scrollDistribution = useMemo(() => {
     const buckets: Record<string, number> = {
@@ -274,7 +177,7 @@ export function EngagementAnalytics() {
       '76-100%': 0,
     };
 
-    for (const session of sessionDerivedStats) {
+    for (const session of finalizedSessionStats) {
       const depth = clamp(session.max_scroll_depth, 0, 100);
 
       if (depth <= 25) buckets['0-25%'] += 1;
@@ -287,7 +190,7 @@ export function EngagementAnalytics() {
       name,
       value,
     }));
-  }, [sessionDerivedStats]);
+  }, [finalizedSessionStats]);
 
   const sessionQualityDistribution = useMemo(() => {
     const buckets: Record<SessionDerivedStats['quality_label'], number> = {
@@ -296,7 +199,7 @@ export function EngagementAnalytics() {
       Passive: 0,
     };
 
-    for (const session of sessionDerivedStats) {
+    for (const session of finalizedSessionStats) {
       buckets[session.quality_label] += 1;
     }
 
@@ -305,10 +208,10 @@ export function EngagementAnalytics() {
       { name: 'Engaged', value: buckets.Engaged },
       { name: 'Passive', value: buckets.Passive },
     ];
-  }, [sessionDerivedStats]);
+  }, [finalizedSessionStats]);
 
   const topSessions = useMemo(() => {
-    return [...sessionDerivedStats]
+    return [...finalizedSessionStats]
       .sort((a, b) => {
         if (b.quality_score !== a.quality_score) {
           return b.quality_score - a.quality_score;
@@ -333,13 +236,13 @@ export function EngagementAnalytics() {
         return b.duration_seconds - a.duration_seconds;
       })
       .slice(0, 5);
-  }, [sessionDerivedStats]);
+  }, [finalizedSessionStats]);
 
   const isLoading =
-    metricsLoading || sessionsLoading || eventsLoading || sectionLoading;
+    metricsLoading || sessionsLoading || sessionAnalyticsLoading;
 
   const error =
-    metricsError || sessionsError || eventsError || sectionError || null;
+    metricsError || sessionsError || sessionAnalyticsError || null;
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
@@ -531,7 +434,7 @@ export function EngagementAnalytics() {
 
       <ChartContainer
         title="Top Engaged Sessions"
-        subtitle="Ranked by verified conversion signals, real section engagement, scroll depth, and duration confidence"
+        subtitle="Ranked by canonical session summary signals with finalized-session confidence"
         className="lg:col-span-2"
       >
         {topSessions.length === 0 ? (

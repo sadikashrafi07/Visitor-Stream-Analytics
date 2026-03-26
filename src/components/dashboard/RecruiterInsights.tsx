@@ -4,7 +4,8 @@ import {
   useVisitors,
   useSectionEngagement,
   useEvents,
-  useDailyMetrics,
+  useSessions,
+  useSessionAnalytics,
 } from '@/hooks/useAnalyticsData';
 import {
   formatSectionName,
@@ -19,8 +20,10 @@ type Insight = {
 };
 
 const EVENT_PROJECT_CLICK = 'project_card_click';
+const EVENT_PROJECT_CLICK_ALT = 'project_click';
 const EVENT_SOCIAL_CLICK = 'social_click';
 const EVENT_CERT_CLICK = 'cert_card_click';
+const EVENT_CERT_CLICK_ALT = 'cert_click';
 const EVENT_CERT_NAV_CLICK = 'cert_nav_click';
 const EVENT_NAV_CLICK = 'nav_click';
 const EVENT_RESUME_DOWNLOAD = 'resume_download';
@@ -57,7 +60,6 @@ function normalizeReferrer(referrer: string | null | undefined) {
   try {
     const url = new URL(raw);
     const host = url.hostname.replace(/^www\./i, '').toLowerCase();
-
     if (!host) return 'Direct';
     return host;
   } catch {
@@ -71,7 +73,6 @@ function normalizeAcquisitionSource(visitor: {
 }) {
   const utmSource = normalizeText(visitor.first_utm_source);
   if (utmSource) return utmSource.toLowerCase();
-
   return normalizeReferrer(visitor.referrer);
 }
 
@@ -95,16 +96,9 @@ function normalizeSocialPlatform(value: unknown) {
   return text ? capitalize(text.toLowerCase()) : null;
 }
 
-function getLatestMetric<
-  T extends { metric_date: string | null | undefined }
->(rows: T[]) {
-  if (!rows.length) return null;
-
-  return [...rows].sort((a, b) => {
-    const aTs = new Date(a.metric_date || '').getTime();
-    const bTs = new Date(b.metric_date || '').getTime();
-    return aTs - bTs;
-  })[rows.length - 1] ?? null;
+function toSafeNumber(value: unknown, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
 }
 
 export function RecruiterInsights() {
@@ -112,32 +106,45 @@ export function RecruiterInsights() {
     data: visitors,
     loading: visitorsLoading,
     error: visitorsError,
-  } = useVisitors();
+  } = useVisitors(false, true);
+
+  const {
+    data: sessions,
+    loading: sessionsLoading,
+    error: sessionsError,
+  } = useSessions(false, true);
+
+  const {
+    data: sessionAnalytics,
+    loading: sessionAnalyticsLoading,
+    error: sessionAnalyticsError,
+  } = useSessionAnalytics(false, true);
 
   const {
     data: sectionData,
     loading: sectionLoading,
     error: sectionError,
-  } = useSectionEngagement();
+  } = useSectionEngagement(false, true);
 
   const {
     data: events,
     loading: eventsLoading,
     error: eventsError,
-  } = useEvents();
-
-  const {
-    data: dailyMetrics,
-    loading: metricsLoading,
-    error: metricsError,
-  } = useDailyMetrics();
+  } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: 1000,
+    sessionId: null,
+    since: null,
+  });
 
   const insights = useMemo<Insight[]>(() => {
     if (
       visitors.length === 0 &&
+      sessions.length === 0 &&
+      sessionAnalytics.length === 0 &&
       sectionData.length === 0 &&
-      events.length === 0 &&
-      dailyMetrics.length === 0
+      events.length === 0
     ) {
       return [];
     }
@@ -154,7 +161,7 @@ export function RecruiterInsights() {
     for (const row of sectionData) {
       const sectionName = normalizeText(row.section_name);
       const sessionId = normalizeText(row.session_id);
-      const seconds = Number(row.time_spent_seconds || 0);
+      const seconds = toSafeNumber(row.time_spent_seconds, 0);
 
       if (!sectionName) continue;
 
@@ -222,10 +229,16 @@ export function RecruiterInsights() {
     const certNavCountsByName: Record<string, number> = {};
     const navCounts: Record<string, number> = {};
 
+    let resumeTotal = 0;
+    let contactTotal = 0;
+
     for (const event of events) {
       const props = safeParseJSON<Record<string, unknown>>(event.properties, {});
 
-      if (event.event_name === EVENT_PROJECT_CLICK) {
+      if (
+        event.event_name === EVENT_PROJECT_CLICK ||
+        event.event_name === EVENT_PROJECT_CLICK_ALT
+      ) {
         increment(projectCounts, normalizeProjectName(props.project_name));
       }
 
@@ -233,7 +246,10 @@ export function RecruiterInsights() {
         increment(socialCounts, normalizeSocialPlatform(props.platform));
       }
 
-      if (event.event_name === EVENT_CERT_CLICK) {
+      if (
+        event.event_name === EVENT_CERT_CLICK ||
+        event.event_name === EVENT_CERT_CLICK_ALT
+      ) {
         increment(certInteractionCounts, normalizeCertName(props.cert_name));
       }
 
@@ -250,6 +266,14 @@ export function RecruiterInsights() {
           normalizeNavTarget(event.section);
 
         increment(navCounts, target);
+      }
+
+      if (event.event_name === EVENT_RESUME_DOWNLOAD) {
+        resumeTotal += 1;
+      }
+
+      if (event.event_name === EVENT_CONTACT_SUCCESS) {
+        contactTotal += 1;
       }
     }
 
@@ -352,18 +376,8 @@ export function RecruiterInsights() {
     }
 
     /* ------------------------------------------------------------------ */
-    /* Conversion insights — use daily_metrics as source of truth         */
+    /* Conversion insights — overall / cumulative                         */
     /* ------------------------------------------------------------------ */
-
-    const resumeTotal = dailyMetrics.reduce(
-      (sum, row) => sum + Number(row.resume_downloads || 0),
-      0
-    );
-
-    const contactTotal = dailyMetrics.reduce(
-      (sum, row) => sum + Number(row.contact_submits || 0),
-      0
-    );
 
     if (resumeTotal > 0) {
       lines.push({
@@ -394,10 +408,24 @@ export function RecruiterInsights() {
     }
 
     /* ------------------------------------------------------------------ */
-    /* Returning visitors                                                 */
+    /* Retention — derive from actual grouped sessions                    */
     /* ------------------------------------------------------------------ */
 
-    const returning = visitors.filter((visitor) => visitor.total_sessions > 1).length;
+    const sessionsByVisitor = new Map<string, number>();
+
+    for (const session of sessions) {
+      const visitorId = normalizeText(session.visitor_id);
+      if (!visitorId) continue;
+
+      sessionsByVisitor.set(
+        visitorId,
+        (sessionsByVisitor.get(visitorId) || 0) + 1
+      );
+    }
+
+    const returning = Array.from(sessionsByVisitor.values()).filter(
+      (count) => count > 1
+    ).length;
 
     if (returning > 0) {
       lines.push({
@@ -414,27 +442,29 @@ export function RecruiterInsights() {
     }
 
     /* ------------------------------------------------------------------ */
-    /* Latest metric insight                                              */
+    /* Engagement — overall / cumulative                                  */
     /* ------------------------------------------------------------------ */
 
-    const latestMetric = getLatestMetric(dailyMetrics);
-
-    if (latestMetric) {
+    if (sessionAnalytics.length > 0) {
       const avgEngagement =
-        parseFloat(String(latestMetric.avg_engagement_score)) || 0;
+        sessionAnalytics.reduce(
+          (sum, row) => sum + toSafeNumber(row.engagement_score, 0),
+          0
+        ) / sessionAnalytics.length;
 
-      const totalConversions =
-        Number(latestMetric.total_conversions) || 0;
+      const convertedSessions = sessionAnalytics.filter((row) =>
+        Boolean(row.has_conversion)
+      ).length;
 
       lines.push({
         emoji: '🔥',
         category: 'Engagement',
         text: (
           <>
-            The latest average engagement score is{' '}
+            The average engagement score across tracked sessions is{' '}
             <strong>{avgEngagement.toFixed(0)}/100</strong>, with{' '}
-            <strong>{totalConversions}</strong> converted session
-            {totalConversions > 1 ? 's' : ''} recorded for that day.
+            <strong>{convertedSessions}</strong> converted session
+            {convertedSessions > 1 ? 's' : ''} recorded overall.
           </>
         ),
       });
@@ -444,7 +474,9 @@ export function RecruiterInsights() {
     /* Audience geography                                                 */
     /* ------------------------------------------------------------------ */
 
-    const countries = [...new Set(visitors.map((v) => v.country).filter(Boolean))];
+    const countries = [
+      ...new Set(visitors.map((v) => v.country).filter(Boolean)),
+    ];
 
     if (countries.length > 0) {
       lines.push({
@@ -462,13 +494,22 @@ export function RecruiterInsights() {
     }
 
     return lines;
-  }, [visitors, sectionData, events, dailyMetrics]);
+  }, [visitors, sessions, sessionAnalytics, sectionData, events]);
 
   const isLoading =
-    visitorsLoading || sectionLoading || eventsLoading || metricsLoading;
+    visitorsLoading ||
+    sessionsLoading ||
+    sessionAnalyticsLoading ||
+    sectionLoading ||
+    eventsLoading;
 
   const error =
-    visitorsError || sectionError || eventsError || metricsError || null;
+    visitorsError ||
+    sessionsError ||
+    sessionAnalyticsError ||
+    sectionError ||
+    eventsError ||
+    null;
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;

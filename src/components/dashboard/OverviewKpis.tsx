@@ -7,6 +7,7 @@ import {
   useSessions,
   useEvents,
   useSectionEngagement,
+  useSessionAnalytics,
 } from '@/hooks/useAnalyticsData';
 import {
   formatDuration,
@@ -23,13 +24,13 @@ import {
   Target,
   Repeat,
   MousePointerClick,
-  Map,
+  Map as MapIcon,
   Sparkles,
 } from 'lucide-react';
 
 const RESUME_EVENT = 'resume_download';
 const CONTACT_SUCCESS_EVENT = 'contact_submit_success';
-const PROJECT_CLICK_EVENT = 'project_card_click';
+const PROJECT_CLICK_EVENTS = new Set(['project_card_click', 'project_click']);
 
 function toSafeNumber(value: unknown, fallback = 0): number {
   const num = Number(value);
@@ -58,29 +59,40 @@ export function OverviewKpis() {
     data: visitors,
     loading: visitorsLoading,
     error: visitorsError,
-  } = useVisitors();
+  } = useVisitors(false, true);
 
   const {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
-  } = useSessions();
+  } = useSessions(false, true);
+
+  const {
+    data: sessionAnalytics,
+    loading: sessionAnalyticsLoading,
+    error: sessionAnalyticsError,
+  } = useSessionAnalytics(false, true);
 
   const {
     data: events,
     loading: eventsLoading,
     error: eventsError,
-  } = useEvents();
+  } = useEvents({
+    realtime: false,
+    enabled: true,
+    limit: 1000,
+    sessionId: null,
+    since: null,
+  });
 
   const {
     data: sectionEngagement,
     loading: sectionLoading,
     error: sectionError,
-  } = useSectionEngagement();
+  } = useSectionEngagement(false, true);
 
   const kpis = useMemo(() => {
-    const latestMetric =
-      metrics.length > 0 ? metrics[metrics.length - 1] : null;
+    const latestMetric = metrics.length > 0 ? metrics[0] : null;
 
     const totalVisitors = visitors.length;
     const totalSessions = sessions.length;
@@ -107,8 +119,8 @@ export function OverviewKpis() {
             endedSessionCount) *
           100
         : latestMetric?.bounce_rate != null
-          ? toSafeNumber(latestMetric.bounce_rate) * 100
-          : 0;
+            ? toSafeNumber(latestMetric.bounce_rate) * 100
+            : 0;
 
     let resumeDownloads = 0;
     let contactSubmits = 0;
@@ -119,7 +131,7 @@ export function OverviewKpis() {
     for (const event of events) {
       if (event.event_name === RESUME_EVENT) resumeDownloads += 1;
       if (event.event_name === CONTACT_SUCCESS_EVENT) contactSubmits += 1;
-      if (event.event_name === PROJECT_CLICK_EVENT) projectClicks += 1;
+      if (PROJECT_CLICK_EVENTS.has(event.event_name)) projectClicks += 1;
 
       if (!event.session_id) continue;
 
@@ -139,17 +151,15 @@ export function OverviewKpis() {
         eventFlagsBySession[event.session_id].hasContact = true;
       }
 
-      if (event.event_name === PROJECT_CLICK_EVENT) {
+      if (PROJECT_CLICK_EVENTS.has(event.event_name)) {
         eventFlagsBySession[event.session_id].hasProjectInterest = true;
       }
     }
 
-    const totalConversions = resumeDownloads + contactSubmits;
-
     const uniqueEngagedSessions = new Set<string>(
       sectionEngagement
         .map((row) => row.session_id)
-        .filter((sessionId): sessionId is string => !!sessionId)
+        .filter((sessionId): sessionId is string => Boolean(sessionId))
     );
 
     const sectionStatsBySession: Record<string, SectionSessionStats> = {};
@@ -173,62 +183,116 @@ export function OverviewKpis() {
       );
     }
 
+    const analyticsBySessionId = new globalThis.Map(
+      sessionAnalytics.map((row) => [row.session_id, row] as const)
+    );
+
+    const totalConversions =
+      sessionAnalytics.length > 0
+        ? sessionAnalytics.filter((row) => Boolean(row.has_conversion)).length
+        : new Set(
+            Object.entries(eventFlagsBySession)
+              .filter(([, flags]) => flags.hasResume || flags.hasContact)
+              .map(([sessionId]) => sessionId)
+          ).size;
+
     const avgEngagement =
-      latestMetric?.avg_engagement_score != null
-        ? toSafeNumber(latestMetric.avg_engagement_score)
-        : (() => {
-            if (endedSessionCount === 0) return 0;
+      sessionAnalytics.length > 0
+        ? sessionAnalytics.reduce(
+            (sum, row) => sum + toSafeNumber(row.engagement_score),
+            0
+          ) / sessionAnalytics.length
+        : latestMetric?.avg_engagement_score != null
+          ? toSafeNumber(latestMetric.avg_engagement_score)
+          : (() => {
+              if (endedSessionCount === 0) return 0;
 
-            let totalScore = 0;
+              let totalScore = 0;
 
-            for (const session of endedSessions) {
-              const sessionId = session.session_id;
-              const flags = eventFlagsBySession[sessionId] || {
-                hasResume: false,
-                hasContact: false,
-                hasProjectInterest: false,
-              };
+              for (const session of endedSessions) {
+                const sessionId = session.session_id;
+                const flags = eventFlagsBySession[sessionId] || {
+                  hasResume: false,
+                  hasContact: false,
+                  hasProjectInterest: false,
+                };
 
-              const sectionStats = sectionStatsBySession[sessionId];
-              const sectionCount = sectionStats ? sectionStats.sections.size : 0;
-              const sectionTime = sectionStats
-                ? toSafeNumber(sectionStats.totalTime)
-                : 0;
+                const sectionStats = sectionStatsBySession[sessionId];
+                const sectionCount = sectionStats ? sectionStats.sections.size : 0;
+                const sectionTime = sectionStats
+                  ? toSafeNumber(sectionStats.totalTime)
+                  : 0;
 
-              let score = 0;
+                let score = 0;
 
-              score += Math.min(toSafeNumber(session.duration_seconds) / 20, 20);
-              score += session.is_bounce ? 0 : 10;
-              score += Math.min(sectionCount * 5, 20);
-              score += Math.min(sectionTime / 6, 20);
+                score += Math.min(toSafeNumber(session.duration_seconds) / 20, 20);
+                score += session.is_bounce ? 0 : 10;
+                score += Math.min(sectionCount * 5, 20);
+                score += Math.min(sectionTime / 6, 20);
 
-              if (flags.hasProjectInterest) score += 10;
-              if (flags.hasResume) score += 20;
-              if (flags.hasContact) score += 20;
+                if (flags.hasProjectInterest) score += 10;
+                if (flags.hasResume) score += 20;
+                if (flags.hasContact) score += 20;
 
-              totalScore += Math.min(100, Math.round(score));
-            }
+                totalScore += Math.min(100, Math.round(score));
+              }
 
-            return totalScore / endedSessionCount;
-          })();
+              return totalScore / endedSessionCount;
+            })();
 
-    const returning = visitors.filter(
-      (visitor) => toSafeNumber(visitor.total_sessions) > 1
+    const sessionsByVisitor = new Map<string, number>();
+
+    for (const session of sessions) {
+      if (!session.visitor_id) continue;
+      sessionsByVisitor.set(
+        session.visitor_id,
+        (sessionsByVisitor.get(session.visitor_id) ?? 0) + 1
+      );
+    }
+
+    const returning = Array.from(sessionsByVisitor.values()).filter(
+      (count) => count > 1
     ).length;
 
-    const frequent = visitors.filter(
-      (visitor) => toSafeNumber(visitor.total_sessions) >= 3
+    const frequent = Array.from(sessionsByVisitor.values()).filter(
+      (count) => count >= 3
     ).length;
 
-    const activeReaders = uniqueEngagedSessions.size;
+    const activeReaders =
+      sessionAnalytics.length > 0
+        ? sessionAnalytics.filter(
+            (row) =>
+              Boolean(row.is_engaged_session) ||
+              toSafeNumber(row.total_section_time) > 0 ||
+              toSafeNumber(row.sections_count) > 0
+          ).length
+        : uniqueEngagedSessions.size;
 
     const avgActiveSectionTime =
-      activeReaders > 0
-        ? sectionEngagement.reduce(
-            (sum, row) => sum + toSafeNumber(row.time_spent_seconds),
-            0
-          ) / activeReaders
-        : 0;
+      sessionAnalytics.length > 0
+        ? (() => {
+            const activeRows = sessionAnalytics.filter(
+              (row) =>
+                Boolean(row.is_engaged_session) ||
+                toSafeNumber(row.total_section_time) > 0 ||
+                toSafeNumber(row.sections_count) > 0
+            );
+
+            if (activeRows.length === 0) return 0;
+
+            return (
+              activeRows.reduce(
+                (sum, row) => sum + toSafeNumber(row.total_section_time),
+                0
+              ) / activeRows.length
+            );
+          })()
+        : activeReaders > 0
+          ? Object.values(sectionStatsBySession).reduce(
+              (sum, row) => sum + toSafeNumber(row.totalTime),
+              0
+            ) / activeReaders
+          : 0;
 
     return {
       totalVisitors,
@@ -244,13 +308,15 @@ export function OverviewKpis() {
       projectClicks,
       activeReaders,
       avgActiveSectionTime,
+      analyticsCoverage: analyticsBySessionId.size,
     };
-  }, [metrics, visitors, sessions, events, sectionEngagement]);
+  }, [metrics, visitors, sessions, sessionAnalytics, events, sectionEngagement]);
 
   const isLoading =
     metricsLoading ||
     visitorsLoading ||
     sessionsLoading ||
+    sessionAnalyticsLoading ||
     eventsLoading ||
     sectionLoading;
 
@@ -258,6 +324,7 @@ export function OverviewKpis() {
     metricsError ||
     visitorsError ||
     sessionsError ||
+    sessionAnalyticsError ||
     eventsError ||
     sectionError ||
     null;
@@ -313,7 +380,7 @@ export function OverviewKpis() {
         title="Total Conversions"
         value={formatNumber(kpis.totalConversions)}
         icon={<Target className="h-4 w-4" />}
-        tooltip="Combined total of resume downloads and successful contact submissions."
+        tooltip="Session-level conversions from resume downloads or successful contact submissions."
       />
 
       <KpiCard
@@ -321,7 +388,7 @@ export function OverviewKpis() {
         value={kpis.avgEngagement.toFixed(0)}
         subtitle="/100"
         icon={<Sparkles className="h-4 w-4" />}
-        tooltip="Average engagement score. Uses daily metrics when available, otherwise falls back to derived behavior quality."
+        tooltip="Average engagement score across tracked sessions."
       />
 
       <KpiCard
@@ -342,21 +409,21 @@ export function OverviewKpis() {
         title="Project Clicks"
         value={formatNumber(kpis.projectClicks)}
         icon={<MousePointerClick className="h-4 w-4" />}
-        tooltip="Total project card interactions, showing portfolio project interest."
+        tooltip="Total project interactions, including both project card clicks and project clicks."
       />
 
       <KpiCard
         title="Active Readers"
         value={formatNumber(kpis.activeReaders)}
-        icon={<Map className="h-4 w-4" />}
-        tooltip="Sessions with recorded section engagement, indicating real reading behavior."
+        icon={<MapIcon className="h-4 w-4" />}
+        tooltip="Sessions with meaningful reading or section engagement activity."
       />
 
       <KpiCard
         title="Avg Active Section Time"
         value={formatDuration(kpis.avgActiveSectionTime)}
         icon={<Clock className="h-4 w-4" />}
-        tooltip="Average tracked section engagement time across sessions that recorded section reading activity."
+        tooltip="Average tracked section engagement time across active sessions."
       />
     </div>
   );
