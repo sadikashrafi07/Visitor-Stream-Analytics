@@ -544,25 +544,29 @@ export function TrafficAnalytics() {
         title="By Country"
         subtitle="Visitor distribution by country"
         data={countryData}
-        showAllLabels
+        showLegend
+        showCountryFlags
       />
 
       <PieChartCard
         title="By Device"
         subtitle="Traffic split by device type"
         data={deviceData}
+        showLegend
       />
 
       <PieChartCard
         title="By Browser"
         subtitle="Most common browser environments"
         data={browserData}
+        showLegend
       />
 
       <PieChartCard
         title="By OS"
         subtitle="Operating system distribution"
         data={osData}
+        showLegend
       />
 
       <BarChartCard
@@ -633,27 +637,29 @@ function PieChartCard({
   title,
   subtitle,
   data,
-  showAllLabels = false,
+  showLegend = false,
+  showCountryFlags = false,
 }: {
   title: string;
   subtitle?: string;
   data: ChartRow[];
-  showAllLabels?: boolean;
+  showLegend?: boolean;
+  showCountryFlags?: boolean;
 }) {
   return (
     <ChartContainer title={title} subtitle={subtitle}>
       {data.length === 0 ? (
         <EmptyState message={`No ${title.toLowerCase()} data available yet`} />
       ) : (
-        <ResponsiveContainer width="100%" height={showAllLabels ? 280 : 220}>
+        <ResponsiveContainer width="100%" height={showLegend ? 280 : 220}>
           <PieChart>
             <Pie
               data={data}
               dataKey="value"
               nameKey="name"
               cx="50%"
-              cy={showAllLabels ? '43%' : '50%'}
-              outerRadius={showAllLabels ? 72 : 80}
+              cy={showLegend ? '43%' : '50%'}
+              outerRadius={showLegend ? 72 : 80}
               label={({ name, percent }) =>
                 percent && percent >= 0.08
                   ? `${name} ${(percent * 100).toFixed(0)}%`
@@ -667,11 +673,11 @@ function PieChartCard({
               ))}
             </Pie>
 
-            {showAllLabels && (
+            {showLegend && (
               <Legend
                 verticalAlign="bottom"
                 align="center"
-                content={<CountryLegend data={data} />}
+                content={<CategoryLegend data={data} showCountryFlags={showCountryFlags} />}
               />
             )}
 
@@ -694,7 +700,13 @@ function PieChartCard({
   );
 }
 
-function CountryLegend({ data }: { data: ChartRow[] }) {
+function CategoryLegend({
+  data,
+  showCountryFlags = false,
+}: {
+  data: ChartRow[];
+  showCountryFlags?: boolean;
+}) {
   const total = data.reduce((sum, item) => sum + item.value, 0);
 
   return (
@@ -709,7 +721,9 @@ function CountryLegend({ data }: { data: ChartRow[] }) {
               style={{ backgroundColor: getChartColor(index) }}
               aria-hidden="true"
             />
-            <span aria-hidden="true">{countryCodeToFlag(item.name)}</span>
+            {showCountryFlags && (
+              <span aria-hidden="true">{countryCodeToFlag(item.name)}</span>
+            )}
             <span>{item.name} {formatPercent(percentage)}</span>
           </span>
         );
