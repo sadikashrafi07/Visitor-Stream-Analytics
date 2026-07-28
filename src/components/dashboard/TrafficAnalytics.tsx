@@ -70,6 +70,10 @@ type SessionRow = {
   utm_term: string | null;
 };
 
+// The analytics tables are intentionally not in Supabase Realtime. Polling
+// keeps this admin-only dashboard current without expanding database exposure.
+const TRAFFIC_REFRESH_INTERVAL_MS = 30_000;
+
 function normalizeLabel(value: string | null | undefined, fallback: string) {
   const text = typeof value === 'string' ? value.trim() : '';
   return text || fallback;
@@ -205,19 +209,19 @@ export function TrafficAnalytics() {
     data: metrics,
     loading: metricsLoading,
     error: metricsError,
-  } = useDailyMetrics();
+  } = useDailyMetrics(false, TRAFFIC_REFRESH_INTERVAL_MS);
 
   const {
     data: visitors,
     loading: visitorsLoading,
     error: visitorsError,
-  } = useVisitors(false, true);
+  } = useVisitors(false, true, TRAFFIC_REFRESH_INTERVAL_MS);
 
   const {
     data: sessions,
     loading: sessionsLoading,
     error: sessionsError,
-  } = useSessions(false, true);
+  } = useSessions(false, true, TRAFFIC_REFRESH_INTERVAL_MS);
 
   const sessionsByVisitorId = useMemo(() => {
     const grouped = new Map<string, number>();

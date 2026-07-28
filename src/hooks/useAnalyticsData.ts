@@ -19,6 +19,7 @@ type QueryState<T> = {
 
 type QueryOptions<T> = {
   realtime?: boolean;
+  refreshIntervalMs?: number;
   enabled?: boolean;
   missingTableFallback?: boolean;
   orderBy?: string;
@@ -181,6 +182,7 @@ function useSupabaseQuery<T>(
   table: string,
   {
     realtime = false,
+    refreshIntervalMs = 0,
     enabled = true,
     missingTableFallback = false,
     orderBy = 'created_at',
@@ -287,6 +289,18 @@ function useSupabaseQuery<T>(
       void supabase.removeChannel(channel);
     };
   }, [table, fetch, realtime, enabled]);
+
+  useEffect(() => {
+    if (!enabled || refreshIntervalMs <= 0) return;
+
+    const intervalId = window.setInterval(() => {
+      void fetch();
+    }, refreshIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [enabled, fetch, refreshIntervalMs]);
 
   return {
     ...state,
@@ -407,9 +421,10 @@ function useEventsFeed({
  * Public-safe hook:
  * daily_metrics is the only analytics table that should normally be public.
  */
-export function useDailyMetrics(realtime = false) {
+export function useDailyMetrics(realtime = false, refreshIntervalMs = 0) {
   return useSupabaseQuery<DailyMetric>('daily_metrics', {
     realtime,
+    refreshIntervalMs,
     orderBy: 'metric_date',
     ascending: false,
     select: '*',
@@ -420,20 +435,30 @@ export function useDailyMetrics(realtime = false) {
  * Admin hooks:
  * These depend on authenticated access and your RLS admin policies.
  */
-export function useVisitors(realtime = false, enabled = true) {
+export function useVisitors(
+  realtime = false,
+  enabled = true,
+  refreshIntervalMs = 0
+) {
   return useSupabaseQuery<Visitor>('visitors', {
     realtime,
     enabled,
+    refreshIntervalMs,
     orderBy: 'created_at',
     ascending: false,
     select: '*',
   });
 }
 
-export function useSessions(realtime = false, enabled = true) {
+export function useSessions(
+  realtime = false,
+  enabled = true,
+  refreshIntervalMs = 0
+) {
   return useSupabaseQuery<Session>('sessions', {
     realtime,
     enabled,
+    refreshIntervalMs,
     orderBy: 'created_at',
     ascending: false,
     select: '*',
