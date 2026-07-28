@@ -97,6 +97,17 @@ function normalizeCountryLabel(value: string | null | undefined) {
   return normalized === 'Unknown' ? normalized : normalized.toUpperCase();
 }
 
+function countryCodeToFlag(country: string) {
+  const code = country.trim().toUpperCase();
+
+  if (code === 'UNKNOWN') return '🌐';
+  if (!/^[A-Z]{2}$/.test(code)) return '🏳️';
+
+  return String.fromCodePoint(
+    ...[...code].map((character) => 127397 + character.codePointAt(0)!)
+  );
+}
+
 function normalizeDeviceLabel(value: string | null | undefined) {
   const normalized = normalizeLabel(value, 'Unknown');
   return normalized === 'Unknown' ? normalized : toTitleCase(normalized);
@@ -634,7 +645,7 @@ function PieChartCard({
       {data.length === 0 ? (
         <EmptyState message={`No ${title.toLowerCase()} data available yet`} />
       ) : (
-        <ResponsiveContainer width="100%" height={showAllLabels ? 260 : 220}>
+        <ResponsiveContainer width="100%" height={showAllLabels ? 280 : 220}>
           <PieChart>
             <Pie
               data={data}
@@ -660,9 +671,7 @@ function PieChartCard({
               <Legend
                 verticalAlign="bottom"
                 align="center"
-                iconType="circle"
-                iconSize={8}
-                wrapperStyle={{ fontSize: 11 }}
+                content={<CountryLegend data={data} />}
               />
             )}
 
@@ -682,6 +691,30 @@ function PieChartCard({
         </ResponsiveContainer>
       )}
     </ChartContainer>
+  );
+}
+
+function CountryLegend({ data }: { data: ChartRow[] }) {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+
+  return (
+    <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 px-3 text-[11px] text-muted-foreground">
+      {data.map((item, index) => {
+        const percentage = total > 0 ? (item.value / total) * 100 : 0;
+
+        return (
+          <span key={item.name} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: getChartColor(index) }}
+              aria-hidden="true"
+            />
+            <span aria-hidden="true">{countryCodeToFlag(item.name)}</span>
+            <span>{item.name} {formatPercent(percentage)}</span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
