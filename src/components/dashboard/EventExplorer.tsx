@@ -29,17 +29,6 @@ const EVENTS_REFRESH_INTERVAL_MS = 30_000;
 
 type EventProperties = Record<string, unknown>;
 
-type SessionVisitMeta = {
-  sessionId: string;
-  visitorId: string;
-  visitIndex: number;
-  totalObservedSessions: number;
-  isReturning: boolean;
-  sessionStartedAtMs: number;
-  previousSessionStartedAtMs: number | null;
-  returnGapMs: number | null;
-};
-
 export function EventExplorer() {
   const {
     data: rawEvents,
@@ -62,49 +51,6 @@ export function EventExplorer() {
   const [search, setSearch] = useState('');
   const [eventFilter, setEventFilter] = useState<string>('all');
   const [sectionFilter, setSectionFilter] = useState<string>('all');
-
-  /**
-   * Important design choice:
-   * We do NOT reconstruct real visit history from raw events because:
-   * - raw events are retained only for a limited window
-   * - the fetch is capped
-   * - partial history would make visit index / returning flags misleading
-   *
-   * So we attach only safe per-session metadata.
-   */
-  const visitMetaBySessionId = useMemo(() => {
-    const map = new Map<string, SessionVisitMeta>();
-
-    for (const event of events) {
-      const sessionId = normalizeText(event.session_id);
-      const visitorId = normalizeText(event.visitor_id);
-      const eventMs = safeTime(event.created_at);
-
-      if (!sessionId || !visitorId || eventMs === 0) continue;
-
-      const existing = map.get(sessionId);
-
-      if (!existing) {
-        map.set(sessionId, {
-          sessionId,
-          visitorId,
-          visitIndex: 1,
-          totalObservedSessions: 1,
-          isReturning: false,
-          sessionStartedAtMs: eventMs,
-          previousSessionStartedAtMs: null,
-          returnGapMs: null,
-        });
-        continue;
-      }
-
-      if (eventMs < existing.sessionStartedAtMs) {
-        existing.sessionStartedAtMs = eventMs;
-      }
-    }
-
-    return map;
-  }, [events]);
 
   const sortedEvents = useMemo(() => {
     return [...events].sort((a, b) => safeTime(b.created_at) - safeTime(a.created_at));
@@ -154,9 +100,7 @@ export function EventExplorer() {
     if (q) {
       result = result.filter((event) => {
         const props = getEventProperties(event);
-        const visitMeta = visitMetaBySessionId.get(event.session_id ?? '');
-        const details =
-          extractDetails(event, props, visitMeta).toLowerCase();
+        const details = extractDetails(event, props).toLowerCase();
 
         const propertiesText =
           props && Object.keys(props).length <= MAX_SERIALIZABLE_PROPERTY_KEYS
@@ -171,12 +115,6 @@ export function EventExplorer() {
         const pageText = normalizeText(event.page)?.toLowerCase() ?? '';
         const visitorText = normalizeText(event.visitor_id)?.toLowerCase() ?? '';
         const sessionText = normalizeText(event.session_id)?.toLowerCase() ?? '';
-        const visitIndexText =
-          visitMeta?.visitIndex != null ? `visit ${visitMeta.visitIndex}` : '';
-        const returningText = visitMeta?.isReturning
-          ? 'returning visitor'
-          : 'first observed session';
-
         return (
           eventText.includes(q) ||
           formattedEventText.includes(q) ||
@@ -186,15 +124,13 @@ export function EventExplorer() {
           rawSectionText.includes(q) ||
           pageText.includes(q) ||
           details.includes(q) ||
-          propertiesText.includes(q) ||
-          visitIndexText.includes(q) ||
-          returningText.includes(q)
+          propertiesText.includes(q)
         );
       });
     }
 
     return result.slice(0, MAX_ROWS);
-  }, [sortedEvents, eventFilter, sectionFilter, search, visitMetaBySessionId]);
+  }, [sortedEvents, eventFilter, sectionFilter, search]);
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
@@ -202,7 +138,7 @@ export function EventExplorer() {
   return (
     <ChartContainer
       title="Recent Activity Explorer"
-      subtitle="Recent event stream from portfolio interactions. Raw events are retained for approximately 14 days."
+      subtitle="Recent event stream from portfolio interactions. Raw events are retained for approximately 30 days."
     >
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         <Input
@@ -260,8 +196,7 @@ export function EventExplorer() {
               <tbody>
                 {filtered.map((event) => {
                   const props = getEventProperties(event);
-                  const visitMeta = visitMetaBySessionId.get(event.session_id ?? '');
-                  const details = extractDetails(event, props, visitMeta);
+                  const details = extractDetails(event, props);
                   const displaySection = getDisplaySection(event);
 
                   return (
@@ -450,52 +385,7 @@ function safeSerialize(value: unknown): string {
   }
 }
 
-function formatDurationFromMs(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-
-  if (days > 0) {
-    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-  }
-
-  if (hours > 0) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-
-  if (minutes > 0) return `${minutes}m`;
-  return `${totalSeconds}s`;
-}
-
-function formatVisitContext(visitMeta?: SessionVisitMeta): string | null {
-  if (!visitMeta) return null;
-
-  const parts: string[] = ['Observed session'];
-
-  if (visitMeta.isReturning) {
-    parts.push('Returning visitor');
-
-    if (visitMeta.returnGapMs != null) {
-      parts.push(`Gap: ${formatDurationFromMs(visitMeta.returnGapMs)}`);
-    }
-  } else {
-    parts.push('First observed session');
-  }
-
-  if (visitMeta.totalObservedSessions > 1) {
-    parts.push(`Observed sessions: ${visitMeta.totalObservedSessions}`);
-  }
-
-  return parts.join(' • ');
-}
-
-function extractDetails(
-  event: AnalyticsEvent,
-  props: EventProperties,
-  visitMeta?: SessionVisitMeta
-): string {
-  const visitContext = formatVisitContext(visitMeta);
+function extractDetails(event: AnalyticsEvent, props: EventProperties): string {
   const rawSection = getRawSection(event);
 
   switch (event.event_name) {
@@ -505,7 +395,6 @@ function extractDetails(
           props.label ? safeValueToString(props.label) : null,
           props.target ? `→ ${safeValueToString(props.target)}` : null,
           props.location ? `(${safeValueToString(props.location)})` : null,
-          visitContext,
         ]) || 'Navigation interaction'
       );
 
@@ -520,7 +409,6 @@ function extractDetails(
           props.position !== undefined
             ? `Position: ${safeValueToString(props.position)}`
             : null,
-          visitContext,
         ]) || 'Project interaction'
       );
 
@@ -532,7 +420,6 @@ function extractDetails(
             : null,
           props.repo ? `Repo: ${safeValueToString(props.repo)}` : null,
           props.location ? `Location: ${safeValueToString(props.location)}` : null,
-          visitContext,
         ]) || 'GitHub interaction'
       );
 
@@ -545,7 +432,6 @@ function extractDetails(
           props.location
             ? `Location: ${safeValueToString(props.location)}`
             : null,
-          visitContext,
         ]) || 'Social interaction'
       );
 
@@ -555,7 +441,6 @@ function extractDetails(
         joinParts([
           props.cert_name ? safeValueToString(props.cert_name) : null,
           props.issuer ? `by ${safeValueToString(props.issuer)}` : null,
-          visitContext,
         ]) || 'Certification interaction'
       );
 
@@ -569,7 +454,6 @@ function extractDetails(
             ? `Cert: ${safeValueToString(props.cert_name)}`
             : null,
           props.issuer ? `Issuer: ${safeValueToString(props.issuer)}` : null,
-          visitContext,
         ]) || 'Certification navigation'
       );
 
@@ -577,7 +461,6 @@ function extractDetails(
       return (
         joinParts([
           `Depth: ${safeValueToString(props.depth ?? 0)}%`,
-          visitContext,
         ]) || 'Scroll depth tracked'
       );
 
@@ -587,7 +470,6 @@ function extractDetails(
           props.scroll_position !== undefined
             ? `From position: ${safeValueToString(props.scroll_position)}`
             : null,
-          visitContext,
         ]) || 'Scrolled to top'
       );
 
@@ -595,7 +477,6 @@ function extractDetails(
       return (
         joinParts([
           `Source: ${safeValueToString(props.source ?? 'unknown')}`,
-          visitContext,
         ]) || 'Resume downloaded'
       );
 
@@ -603,7 +484,6 @@ function extractDetails(
       return (
         joinParts([
           'Contact form submitted successfully',
-          visitContext,
         ]) || 'Contact form submitted successfully'
       );
 
@@ -616,7 +496,6 @@ function extractDetails(
           props.subject_len !== undefined
             ? `Subject: ${safeValueToString(props.subject_len)} chars`
             : null,
-          visitContext,
         ]) || 'Contact form submission attempted'
       );
 
@@ -625,7 +504,6 @@ function extractDetails(
         joinParts([
           props.status ? `Status: ${safeValueToString(props.status)}` : null,
           props.reason ? `Reason: ${safeValueToString(props.reason)}` : null,
-          visitContext,
         ]) || 'Contact form submission failed'
       );
 
@@ -637,7 +515,6 @@ function extractDetails(
             ? `Time: ${safeValueToString(props.time_spent_seconds)}s`
             : null,
           props.reason ? `Reason: ${safeValueToString(props.reason)}` : null,
-          visitContext,
         ]) || 'Section view ended'
       );
 
@@ -645,14 +522,12 @@ function extractDetails(
       return (
         joinParts([
           rawSection ? `Section: ${safeValueToString(rawSection)}` : null,
-          visitContext,
         ]) || 'Section view started'
       );
 
     case 'session_start':
       return (
         joinParts([
-          visitContext,
           props.entry_page
             ? `Entry page: ${safeValueToString(props.entry_page)}`
             : event.page
@@ -664,7 +539,6 @@ function extractDetails(
     case 'session_end':
       return (
         joinParts([
-          visitContext,
           props.exit_page
             ? `Exit page: ${safeValueToString(props.exit_page)}`
             : event.page
@@ -691,7 +565,6 @@ function extractDetails(
       return (
         joinParts([
           visibleEntries.join(', ') || 'No extra metadata',
-          visitContext,
         ]) || 'No extra metadata'
       );
     }
