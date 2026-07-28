@@ -330,11 +330,26 @@ function useEventsFeed({
       error: null,
     }));
 
-    const { data, error } = await supabase.rpc('get_events_explorer_feed', {
-      p_limit: limit,
-      p_session_id: sessionId,
-      p_since: since,
-    });
+    // The view is security-invoker and protected by the same admin RLS policy
+    // as events. Query it directly so the current authenticated session is
+    // always used; this avoids depending on the retired RPC wrapper.
+    let query = supabase
+      .from('events_explorer_feed')
+      .select(
+        'event_id, created_at, event_name, section, page, properties, visitor_id, session_id'
+      )
+      .order('created_at', { ascending: false })
+      .limit(Math.min(Math.max(limit, 1), 1000));
+
+    if (sessionId) {
+      query = query.eq('session_id', sessionId);
+    }
+
+    if (since) {
+      query = query.gte('created_at', since);
+    }
+
+    const { data, error } = await query;
 
     if (!isMountedRef.current || requestId !== requestIdRef.current) return;
 
@@ -342,7 +357,7 @@ function useEventsFeed({
       setState({
         data: [],
         loading: false,
-        error: normalizeSupabaseError('get_events_explorer_feed', error.message),
+        error: normalizeSupabaseError('events_explorer_feed', error.message),
       });
       return;
     }
