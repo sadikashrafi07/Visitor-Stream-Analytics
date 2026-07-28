@@ -12,6 +12,7 @@ import {
   PieChart,
   Pie,
   Cell,
+  Legend,
 } from 'recharts';
 import {
   ChartContainer,
@@ -532,6 +533,7 @@ export function TrafficAnalytics() {
         title="By Country"
         subtitle="Visitor distribution by country"
         data={countryData}
+        showAllLabels
       />
 
       <PieChartCard
@@ -620,25 +622,27 @@ function PieChartCard({
   title,
   subtitle,
   data,
+  showAllLabels = false,
 }: {
   title: string;
   subtitle?: string;
   data: ChartRow[];
+  showAllLabels?: boolean;
 }) {
   return (
     <ChartContainer title={title} subtitle={subtitle}>
       {data.length === 0 ? (
         <EmptyState message={`No ${title.toLowerCase()} data available yet`} />
       ) : (
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveContainer width="100%" height={showAllLabels ? 260 : 220}>
           <PieChart>
             <Pie
               data={data}
               dataKey="value"
               nameKey="name"
               cx="50%"
-              cy="50%"
-              outerRadius={80}
+              cy={showAllLabels ? '43%' : '50%'}
+              outerRadius={showAllLabels ? 72 : 80}
               label={({ name, percent }) =>
                 percent && percent >= 0.08
                   ? `${name} ${(percent * 100).toFixed(0)}%`
@@ -651,6 +655,16 @@ function PieChartCard({
                 <Cell key={index} fill={getChartColor(index)} />
               ))}
             </Pie>
+
+            {showAllLabels && (
+              <Legend
+                verticalAlign="bottom"
+                align="center"
+                iconType="circle"
+                iconSize={8}
+                wrapperStyle={{ fontSize: 11 }}
+              />
+            )}
 
             <Tooltip
               contentStyle={{
