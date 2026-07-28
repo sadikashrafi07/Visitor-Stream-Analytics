@@ -24,6 +24,8 @@ import {
 const MAX_ROWS = 100;
 const EVENTS_FETCH_LIMIT = 1000;
 const MAX_SERIALIZABLE_PROPERTY_KEYS = 20;
+const MAX_EXPANDED_PROPERTIES = 24;
+const EVENTS_REFRESH_INTERVAL_MS = 30_000;
 
 type EventProperties = Record<string, unknown>;
 
@@ -47,6 +49,7 @@ export function EventExplorer() {
     limit: EVENTS_FETCH_LIMIT,
     enabled: true,
     realtime: false,
+    refreshIntervalMs: EVENTS_REFRESH_INTERVAL_MS,
     sessionId: null,
     since: null,
   });
@@ -280,11 +283,8 @@ export function EventExplorer() {
 
                       <td className="px-3 py-2 text-xs">{displaySection}</td>
 
-                      <td
-                        className="max-w-[360px] truncate px-3 py-2 text-xs text-muted-foreground"
-                        title={details}
-                      >
-                        {details}
+                      <td className="max-w-[360px] px-3 py-2 text-xs text-muted-foreground">
+                        <EventDetails details={details} properties={props} />
                       </td>
 
                       <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
@@ -342,6 +342,50 @@ function getEventProperties(event: AnalyticsEvent): EventProperties {
   }
 
   return {};
+}
+
+function EventDetails({
+  details,
+  properties,
+}: {
+  details: string;
+  properties: EventProperties;
+}) {
+  const entries = Object.entries(properties)
+    .filter(([key]) => key.trim() !== '' && !key.startsWith('_'))
+    .sort(([firstKey], [secondKey]) => firstKey.localeCompare(secondKey));
+
+  if (entries.length === 0) {
+    return (
+      <span className="block truncate" title={details}>
+        {details}
+      </span>
+    );
+  }
+
+  const visibleEntries = entries.slice(0, MAX_EXPANDED_PROPERTIES);
+  const hiddenCount = entries.length - visibleEntries.length;
+
+  return (
+    <details className="group max-w-[360px]">
+      <summary className="cursor-pointer truncate text-muted-foreground marker:text-primary" title={details}>
+        {details}
+      </summary>
+      <dl className="mt-2 space-y-1 border-l border-border pl-2 text-[11px] leading-4">
+        {visibleEntries.map(([key, value]) => (
+          <div key={key} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
+            <dt className="font-medium text-foreground">{key}</dt>
+            <dd className="break-words">{safeValueToString(value)}</dd>
+          </div>
+        ))}
+        {hiddenCount > 0 && (
+          <div className="text-muted-foreground">
+            {hiddenCount} additional propert{hiddenCount === 1 ? 'y' : 'ies'} not shown
+          </div>
+        )}
+      </dl>
+    </details>
+  );
 }
 
 function getRawSection(event: AnalyticsEvent): string | null {

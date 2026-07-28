@@ -30,6 +30,7 @@ type QueryOptions<T> = {
 
 type EventsFeedOptions = {
   realtime?: boolean;
+  refreshIntervalMs?: number;
   enabled?: boolean;
   limit?: number;
   sessionId?: string | null;
@@ -310,6 +311,7 @@ function useSupabaseQuery<T>(
 
 function useEventsFeed({
   realtime = false,
+  refreshIntervalMs = 0,
   enabled = true,
   limit = 300,
   sessionId = null,
@@ -410,6 +412,18 @@ function useEventsFeed({
       void supabase.removeChannel(channel);
     };
   }, [fetch, realtime, enabled]);
+
+  useEffect(() => {
+    if (!enabled || refreshIntervalMs <= 0) return;
+
+    const intervalId = window.setInterval(() => {
+      void fetch();
+    }, refreshIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [enabled, fetch, refreshIntervalMs]);
 
   return {
     ...state,
