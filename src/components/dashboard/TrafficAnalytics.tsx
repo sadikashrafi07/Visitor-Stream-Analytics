@@ -223,24 +223,10 @@ export function TrafficAnalytics() {
     error: sessionsError,
   } = useSessions(false, true, TRAFFIC_REFRESH_INTERVAL_MS);
 
-  const sessionsByVisitorId = useMemo(() => {
-    const grouped = new Map<string, number>();
-
-    for (const session of sessions) {
-      if (!session.visitor_id) continue;
-      grouped.set(session.visitor_id, (grouped.get(session.visitor_id) || 0) + 1);
-    }
-
-    return grouped;
-  }, [sessions]);
-
-  const activeVisitors = useMemo(() => {
-    return visitors.filter(
-      (visitor) =>
-        Boolean(visitor.visitor_id) &&
-        (sessionsByVisitorId.get(visitor.visitor_id) || 0) > 0
-    );
-  }, [visitors, sessionsByVisitorId]);
+  const trackedVisitors = useMemo(
+    () => visitors.filter((visitor) => Boolean(visitor.visitor_id)),
+    [visitors]
+  );
 
   const allTrackedSessions = useMemo(() => {
     return sessions.filter((session) => Boolean(session.session_id));
@@ -260,46 +246,46 @@ export function TrafficAnalytics() {
   const countryData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        activeVisitors.map((visitor) => visitor.country),
+        trackedVisitors.map((visitor) => visitor.country),
         normalizeCountryLabel
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const deviceData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        activeVisitors.map((visitor) => visitor.device_type),
+        trackedVisitors.map((visitor) => visitor.device_type),
         normalizeDeviceLabel
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const browserData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        activeVisitors.map((visitor) => visitor.browser),
+        trackedVisitors.map((visitor) => visitor.browser),
         normalizeBrowserLabel
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const osData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        activeVisitors.map((visitor) => visitor.os),
+        trackedVisitors.map((visitor) => visitor.os),
         normalizeOsLabel
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const referrerData = useMemo<ChartRow[]>(
     () =>
       buildCountRows(
-        activeVisitors.map((visitor) => visitor.referrer),
+        trackedVisitors.map((visitor) => visitor.referrer),
         normalizeReferrerLabel
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const firstTouchSourceFallback = 'No First-Touch Source';
@@ -312,31 +298,31 @@ export function TrafficAnalytics() {
   const firstTouchSourceData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        activeVisitors.map((visitor) => visitor.first_utm_source),
+        trackedVisitors.map((visitor) => visitor.first_utm_source),
         normalizeSourceLabel,
         firstTouchSourceFallback
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const firstTouchMediumData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        activeVisitors.map((visitor) => visitor.first_utm_medium),
+        trackedVisitors.map((visitor) => visitor.first_utm_medium),
         normalizeMediumLabel,
         firstTouchMediumFallback
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const firstTouchCampaignData = useMemo<ChartRow[]>(
     () =>
       buildAcquisitionRows(
-        activeVisitors.map((visitor) => visitor.first_utm_campaign),
+        trackedVisitors.map((visitor) => visitor.first_utm_campaign),
         normalizeCampaignLabel,
         firstTouchCampaignFallback
       ),
-    [activeVisitors]
+    [trackedVisitors]
   );
 
   const sessionSourceData = useMemo<ChartRow[]>(
@@ -370,10 +356,10 @@ export function TrafficAnalytics() {
   );
 
   const attributionSummary = useMemo(() => {
-    const totalVisitors = activeVisitors.length;
+    const totalVisitors = trackedVisitors.length;
     const totalSessions = allTrackedSessions.length;
 
-    const attributedVisitors = activeVisitors.filter(hasAnyVisitorFirstTouch).length;
+    const attributedVisitors = trackedVisitors.filter(hasAnyVisitorFirstTouch).length;
     const taggedSessions = allTrackedSessions.filter(hasAnySessionUtm).length;
 
     const firstTouchSourceTop =
@@ -399,7 +385,7 @@ export function TrafficAnalytics() {
       sessionSourceTop,
     };
   }, [
-    activeVisitors,
+    trackedVisitors,
     allTrackedSessions,
     firstTouchSourceData,
     sessionSourceData,
@@ -446,7 +432,7 @@ export function TrafficAnalytics() {
             {formatNumber(attributionSummary.attributedVisitors)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {formatPercent(attributionSummary.attributedVisitorRate)} of active visitors
+            {formatPercent(attributionSummary.attributedVisitorRate)} of tracked visitors
             have first-touch UTM attribution
           </p>
         </div>
