@@ -25,6 +25,7 @@ type QueryOptions<T> = {
   orderBy?: string;
   ascending?: boolean;
   select?: string;
+  rpcName?: string;
   transform?: (rows: unknown[]) => T[];
 };
 
@@ -189,6 +190,7 @@ function useSupabaseQuery<T>(
     orderBy = 'created_at',
     ascending = false,
     select = '*',
+    rpcName,
     transform,
   }: QueryOptions<T> = {}
 ) {
@@ -221,18 +223,29 @@ function useSupabaseQuery<T>(
       error: null,
     }));
 
-    let query = supabase.from(table).select(select);
+    let data: unknown = null;
+    let errorMessage: string | null = null;
 
-    if (orderBy) {
-      query = query.order(orderBy, { ascending });
+    if (rpcName) {
+      const { data: rpcData, error } = await supabase.rpc(rpcName);
+      data = rpcData;
+      errorMessage = error?.message ?? null;
+    } else {
+      let query = supabase.from(table).select(select);
+
+      if (orderBy) {
+        query = query.order(orderBy, { ascending });
+      }
+
+      const { data: tableData, error } = await query;
+      data = tableData;
+      errorMessage = error?.message ?? null;
     }
-
-    const { data, error } = await query;
 
     if (!isMountedRef.current || requestId !== requestIdRef.current) return;
 
-    if (error) {
-      if (missingTableFallback && isMissingRelationError(error.message)) {
+    if (errorMessage) {
+      if (missingTableFallback && isMissingRelationError(errorMessage)) {
         setState({
           data: [],
           loading: false,
@@ -244,7 +257,7 @@ function useSupabaseQuery<T>(
       setState({
         data: [],
         loading: false,
-        error: normalizeSupabaseError(table, error.message),
+        error: normalizeSupabaseError(table, errorMessage),
       });
       return;
     }
@@ -264,6 +277,7 @@ function useSupabaseQuery<T>(
     orderBy,
     ascending,
     transform,
+    rpcName,
     missingTableFallback,
   ]);
 
@@ -277,7 +291,9 @@ function useSupabaseQuery<T>(
   }, [fetch]);
 
   useEffect(() => {
-    if (!enabled || !realtime) return;
+    // Public reporting is served through RPCs, not Realtime replication of
+    // protected tables. Polling remains the safe refresh mechanism.
+    if (!enabled || !realtime || rpcName) return;
 
     const channel = supabase
       .channel(makeRealtimeChannelName(`${table}-changes`))
@@ -289,7 +305,7 @@ function useSupabaseQuery<T>(
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [table, fetch, realtime, enabled]);
+  }, [table, fetch, realtime, enabled, rpcName]);
 
   useEffect(() => {
     if (!enabled || refreshIntervalMs <= 0) return;
@@ -346,26 +362,7 @@ function useEventsFeed({
       error: null,
     }));
 
-    // The view is security-invoker and protected by the same admin RLS policy
-    // as events. Query it directly so the current authenticated session is
-    // always used; this avoids depending on the retired RPC wrapper.
-    let query = supabase
-      .from('events_explorer_feed')
-      .select(
-        'event_id, created_at, event_name, section, page, properties, visitor_id, session_id'
-      )
-      .order('created_at', { ascending: false })
-      .limit(Math.min(Math.max(limit, 1), 1000));
-
-    if (sessionId) {
-      query = query.eq('session_id', sessionId);
-    }
-
-    if (since) {
-      query = query.gte('created_at', since);
-    }
-
-    const { data, error } = await query;
+    const { data, error } = await supabase.rpc('get_public_analytics_events');
 
     if (!isMountedRef.current || requestId !== requestIdRef.current) return;
 
@@ -373,13 +370,26 @@ function useEventsFeed({
       setState({
         data: [],
         loading: false,
-        error: normalizeSupabaseError('events_explorer_feed', error.message),
+        error: normalizeSupabaseError('get_public_analytics_events', error.message),
       });
       return;
     }
 
+    let events = normalizeEvents(Array.isArray(data) ? data : []);
+
+    if (sessionId) {
+      events = events.filter((event) => event.session_id === sessionId);
+    }
+
+    if (since) {
+      const sinceTime = Date.parse(since);
+      if (Number.isFinite(sinceTime)) {
+        events = events.filter((event) => Date.parse(event.created_at) >= sinceTime);
+      }
+    }
+
     setState({
-      data: normalizeEvents(Array.isArray(data) ? data : []),
+      data: events.slice(0, Math.min(Math.max(limit, 1), 1000)),
       loading: false,
       error: null,
     });
@@ -432,35 +442,31 @@ function useEventsFeed({
 }
 
 /**
- * Public-safe hook:
- * daily_metrics is the only analytics table that should normally be public.
+ * Every dashboard dataset is returned by a sanitized public reporting RPC.
+ * Raw tables remain private behind their original RLS policies.
  */
 export function useDailyMetrics(realtime = false, refreshIntervalMs = 0) {
-  return useSupabaseQuery<DailyMetric>('daily_metrics', {
+  return useSupabaseQuery<DailyMetric>('public analytics metrics', {
     realtime,
     refreshIntervalMs,
-    orderBy: 'metric_date',
-    ascending: false,
-    select: '*',
+    rpcName: 'get_public_analytics_daily_metrics',
   });
 }
 
 /**
- * Admin hooks:
- * These depend on authenticated access and your RLS admin policies.
+ * These hooks keep the existing UI data shapes while using the public-safe
+ * reporting contract, so the dashboard does not expose raw analytics rows.
  */
 export function useVisitors(
   realtime = false,
   enabled = true,
   refreshIntervalMs = 0
 ) {
-  return useSupabaseQuery<Visitor>('visitors', {
+  return useSupabaseQuery<Visitor>('public analytics visitors', {
     realtime,
     enabled,
     refreshIntervalMs,
-    orderBy: 'created_at',
-    ascending: false,
-    select: '*',
+    rpcName: 'get_public_analytics_visitors',
   });
 }
 
@@ -469,33 +475,27 @@ export function useSessions(
   enabled = true,
   refreshIntervalMs = 0
 ) {
-  return useSupabaseQuery<Session>('sessions', {
+  return useSupabaseQuery<Session>('public analytics sessions', {
     realtime,
     enabled,
     refreshIntervalMs,
-    orderBy: 'created_at',
-    ascending: false,
-    select: '*',
+    rpcName: 'get_public_analytics_sessions',
   });
 }
 
 export function useSessionAnalytics(realtime = false, enabled = true) {
-  return useSupabaseQuery<SessionAnalytics>('session_summary', {
+  return useSupabaseQuery<SessionAnalytics>('public analytics session summary', {
     realtime,
     enabled,
-    orderBy: 'created_at',
-    ascending: false,
-    select: '*',
+    rpcName: 'get_public_analytics_session_summary',
   });
 }
 
 export function useSectionEngagement(realtime = false, enabled = true) {
-  return useSupabaseQuery<SectionEngagement>('section_engagement', {
+  return useSupabaseQuery<SectionEngagement>('public analytics section engagement', {
     realtime,
     enabled,
-    orderBy: 'created_at',
-    ascending: false,
-    select: '*',
+    rpcName: 'get_public_analytics_section_engagement',
   });
 }
 

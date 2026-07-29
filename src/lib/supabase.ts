@@ -13,10 +13,10 @@ if (!SUPABASE_ANON_KEY) {
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    // The dashboard reads admin-protected analytics tables. Keep the signed-in
-    // admin session across refreshes and renew it before the JWT expires.
-    persistSession: true,
-    autoRefreshToken: true,
+    // This dashboard intentionally uses the anonymous role and the database's
+    // read-only public reporting RPCs. No visitor needs a Supabase account.
+    persistSession: false,
+    autoRefreshToken: false,
     detectSessionInUrl: false,
   },
   global: {
